@@ -1001,7 +1001,8 @@ func (d *QuarkUCShare) getShareFilesWithBinding(binding shareRequestBinding, id 
 		}
 		if resp.Message == "ok" {
 			files = append(files, resp.Data.Files...)
-			if len(files) >= resp.Metadata.Total {
+			// 空页即终止:风控隐藏文件时 _total 仍计数但每页 list 恒空,只看 total 会无限翻页
+			if len(files) >= resp.Metadata.Total || len(resp.Data.Files) == 0 {
 				break
 			}
 			page++

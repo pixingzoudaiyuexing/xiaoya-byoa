@@ -211,6 +211,11 @@ func (t *ThunderShare) getShareInfo(ctx context.Context, thunder *thunder_browse
 	}
 
 	log.Debugf("[%v] get Thunder share token: %v", thunder.ID, share.Token)
+	if share.Token == "" {
+		// 迅雷对"提取码错误"和"分享因违规被屏蔽/已删除"都返回 200、不签发 pass_code_token 且 files 为空;
+		// 不在此报错会伪装成"空目录"静默挂载
+		return share, errors.New("分享无法访问:提取码错误或分享可能因违规被屏蔽")
+	}
 	t.ShareToken = share.Token
 	return share, nil
 }
