@@ -609,21 +609,21 @@ func (d *QuarkUCShare) saveOneCore(ctx context.Context, binding shareRequestBind
 
 // SaveTo 把分享对象(文件或目录)服务端转存到同族账号存储的目标目录,实现 driver.ShareSaver 契约。
 // 目标账号由 dstStorage 明确指定(非轮询);不走临时目录、不进缓存、不登记删除。
-func (d *QuarkUCShare) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, ids []string) ([]string, error) {
+func (d *QuarkUCShare) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, objs []model.Obj) ([]string, error) {
 	uc, ok := dstStorage.(*quark.QuarkOrUC)
 	if !ok || uc.Config().Name != d.getDriverName() {
 		return nil, fmt.Errorf("目标存储不是%s账号驱动,不支持服务端转存", d.getDriverName())
 	}
 	binding := bindRequestDriver(uc)
-	saved := make([]string, 0, len(ids))
-	for _, id := range ids {
-		parsed, err := parseShareFileID(id)
+	saved := make([]string, 0, len(objs))
+	for _, obj := range objs {
+		parsed, err := parseShareFileID(obj.GetID())
 		if err != nil {
 			return saved, err
 		}
 		newFid, _, err := d.saveOneCore(ctx, binding, parsed, dstDir.GetID())
 		if err != nil {
-			return saved, fmt.Errorf("转存 %s 失败: %w", id, err)
+			return saved, fmt.Errorf("转存 %s 失败: %w", obj.GetID(), err)
 		}
 		saved = append(saved, newFid)
 	}

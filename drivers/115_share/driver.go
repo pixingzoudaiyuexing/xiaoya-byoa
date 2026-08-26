@@ -241,24 +241,24 @@ type shareReceiveResp struct {
 // 实现 driver.ShareSaver 契约:webapi share/receive 的 cid 参数直达目标目录,不经服务器字节中转。
 // 仅 cookie 版账号驱动可转存(开放平台无分享接收接口);目录对象由网盘侧整棵递归转存。
 // 响应体不带新对象 fid 的稳定字段,新 id 经转存前后目标目录清单差集解析(文件按 sha1、目录按名称)。
-func (d *Pan115Share) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, ids []string) ([]string, error) {
+func (d *Pan115Share) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, objs []model.Obj) ([]string, error) {
 	pan115, ok := dstStorage.(*_115.Pan115)
 	if !ok {
 		return nil, errors.New("目标存储不是115云盘账号(cookie 版)驱动,不支持服务端转存")
 	}
-	return d.saveTo(ctx, pan115, pan115.GetClient(), dstDir, ids)
+	return d.saveTo(ctx, pan115, pan115.GetClient(), dstDir, objs)
 }
 
-func (d *Pan115Share) saveTo(ctx context.Context, pan115 *_115.Pan115, client *driver115.Pan115Client, dstDir model.Obj, ids []string) ([]string, error) {
+func (d *Pan115Share) saveTo(ctx context.Context, pan115 *_115.Pan115, client *driver115.Pan115Client, dstDir model.Obj, objs []model.Obj) ([]string, error) {
 	if err := pan115.WaitLimit(ctx); err != nil {
 		return nil, err
 	}
 	cid := dstDir.GetID()
 
 	// 分享对象 id:文件为「fid-sha1」复合(Link 同款拆法),目录为裸 cid;file_id 参数只要 fid
-	fids := make([]string, 0, len(ids))
-	for _, id := range ids {
-		fids = append(fids, strings.SplitN(id, "-", 2)[0])
+	fids := make([]string, 0, len(objs))
+	for _, obj := range objs {
+		fids = append(fids, strings.SplitN(obj.GetID(), "-", 2)[0])
 	}
 
 	before, err := listTargetIndex(client, cid)
@@ -293,7 +293,7 @@ func (d *Pan115Share) saveTo(ctx context.Context, pan115 *_115.Pan115, client *d
 		}
 		return nil, errors.New(msg)
 	}
-	log.Infof("[%v] 115服务端转存 %d 个对象到 %v", pan115.ID, len(ids), dstDir.GetPath())
+	log.Infof("[%v] 115服务端转存 %d 个对象到 %v", pan115.ID, len(objs), dstDir.GetPath())
 
 	if before == nil {
 		return []string{}, nil
@@ -306,7 +306,7 @@ func (d *Pan115Share) saveTo(ctx context.Context, pan115 *_115.Pan115, client *d
 		log.Debugf("[115-share] list target dir after receive failed: %v", err)
 		return []string{}, nil
 	}
-	saved := make([]string, 0, len(ids))
+	saved := make([]string, 0, len(objs))
 	for key, fid := range after {
 		if _, existed := before[key]; !existed {
 			saved = append(saved, fid)

@@ -216,11 +216,13 @@ type LinkCacheModeResolver interface {
 // The endpoint probes this interface; drivers without it fall back to
 // cross-storage copy (byte relay) at the caller.
 type ShareSaver interface {
-	// SaveTo saves the share objects identified by ids (obj IDs as returned
-	// by List; a directory ID is saved recursively by the netdisk) into
-	// dstDir on dstStorage, which must be an account storage of the same
-	// vendor. Returns the IDs of the newly created objects.
-	SaveTo(ctx context.Context, dstStorage Driver, dstDir model.Obj, ids []string) ([]string, error)
+	// SaveTo saves the share objects objs (full objects as returned by List;
+	// a directory is saved recursively by the netdisk) into dstDir on
+	// dstStorage, which must be an account storage of the same vendor.
+	// Full objects are passed (not bare IDs) because some vendors' save APIs
+	// also need the name / folder flag (e.g. 189 SHARE_SAVE taskInfos).
+	// Returns the IDs of the newly created objects.
+	SaveTo(ctx context.Context, dstStorage Driver, dstDir model.Obj, objs []model.Obj) ([]string, error)
 }
 
 type DirectUploader interface {

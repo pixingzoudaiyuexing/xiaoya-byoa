@@ -67,14 +67,14 @@ func FsShareSave(c *gin.Context) {
 		return
 	}
 
-	ids := make([]string, 0, len(req.Names))
+	objs := make([]model.Obj, 0, len(req.Names))
 	for _, name := range req.Names {
 		obj, err := op.Get(c.Request.Context(), srcStorage, stdpath.Join(srcActualPath, name))
 		if err != nil {
 			common.ErrorResp(c, errors.Wrapf(err, "获取源对象 %s 失败", name), 500)
 			return
 		}
-		ids = append(ids, obj.GetID())
+		objs = append(objs, obj)
 	}
 
 	dstStorage, dstActualPath, err := op.GetStorageAndActualPath(dstPath)
@@ -92,7 +92,7 @@ func FsShareSave(c *gin.Context) {
 		return
 	}
 
-	fids, err := saver.SaveTo(c.Request.Context(), dstStorage, dstDir, ids)
+	fids, err := saver.SaveTo(c.Request.Context(), dstStorage, dstDir, objs)
 	if err != nil {
 		common.ErrorResp(c, err, 400)
 		return

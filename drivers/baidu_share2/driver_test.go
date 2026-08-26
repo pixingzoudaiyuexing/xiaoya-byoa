@@ -241,8 +241,12 @@ func TestBaiduShare2SaveTo(t *testing.T) {
 	bd := &baidu_netdisk.BaiduNetdisk{}
 	bd.Cookie = "BDUSS=abc"
 	dst := &model.Object{ID: "1", Name: "剧", Path: "/我的追剧/剧", IsFolder: true}
+	objs := []model.Obj{
+		&model.Object{ID: "111", Name: "第01集.mp4"},
+		&model.Object{ID: "222", Name: "第02集.mp4"},
+	}
 
-	saved, err := d.SaveTo(context.Background(), bd, dst, []string{"111", "222"})
+	saved, err := d.SaveTo(context.Background(), bd, dst, objs)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -275,7 +279,7 @@ func TestBaiduShare2SaveTo_ApiErrorPropagates(t *testing.T) {
 	bd := &baidu_netdisk.BaiduNetdisk{}
 	dst := &model.Object{ID: "1", Name: "剧", Path: "/我的追剧/剧", IsFolder: true}
 
-	_, err := d.SaveTo(context.Background(), bd, dst, []string{"111"})
+	_, err := d.SaveTo(context.Background(), bd, dst, []model.Obj{&model.Object{ID: "111", Name: "第01集.mp4"}})
 	if err == nil || !strings.Contains(err.Error(), "文件已存在") {
 		t.Fatalf("expected api error to propagate, got %v", err)
 	}
@@ -286,7 +290,7 @@ func TestBaiduShare2SaveTo_RejectsNonBaiduTarget(t *testing.T) {
 	d := &BaiduShare2{ShareId: "123", ShareUk: "456", Token: "seckey"}
 	dst := &model.Object{ID: "1", Name: "剧", Path: "/我的追剧/剧", IsFolder: true}
 
-	_, err := d.SaveTo(context.Background(), nil, dst, []string{"111"})
+	_, err := d.SaveTo(context.Background(), nil, dst, []model.Obj{&model.Object{ID: "111", Name: "第01集.mp4"}})
 	if err == nil || !strings.Contains(err.Error(), "百度网盘账号") {
 		t.Fatalf("expected non-baidu target rejection, got %v", err)
 	}

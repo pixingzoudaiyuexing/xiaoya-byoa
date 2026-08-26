@@ -55,8 +55,12 @@ func TestPan115ShareSaveTo(t *testing.T) {
 	d.ReceiveCode = "RC456"
 	dst := &model.Object{ID: "987654", Name: "我的追剧/剧名", IsFolder: true}
 
-	saved, err := d.saveTo(context.Background(), &_115.Pan115{}, driver115.New(), dst,
-		[]string{"111-sha1-ep1", "222-sha1-ep2", "333"})
+	objs := []model.Obj{
+		&model.Object{ID: "111-sha1-ep1", Name: "第01集.mkv"},
+		&model.Object{ID: "222-sha1-ep2", Name: "第02集.mkv"},
+		&model.Object{ID: "333", Name: "剧名", IsFolder: true},
+	}
+	saved, err := d.saveTo(context.Background(), &_115.Pan115{}, driver115.New(), dst, objs)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -89,7 +93,8 @@ func TestPan115ShareSaveTo_ApiErrorPropagates(t *testing.T) {
 
 	d := &Pan115Share{}
 	dst := &model.Object{ID: "1", Name: "剧名", IsFolder: true}
-	_, err := d.saveTo(context.Background(), &_115.Pan115{}, driver115.New(), dst, []string{"111-sha1"})
+	_, err := d.saveTo(context.Background(), &_115.Pan115{}, driver115.New(), dst,
+		[]model.Obj{&model.Object{ID: "111-sha1", Name: "第01集.mkv"}})
 	if err == nil || !strings.Contains(err.Error(), "分享已取消") {
 		t.Fatalf("expected api error to propagate, got %v", err)
 	}
@@ -106,7 +111,7 @@ func TestPan115ShareSaveTo_RejectsNon115Target(t *testing.T) {
 
 	d := &Pan115Share{}
 	dst := &model.Object{ID: "1", Name: "剧名", IsFolder: true}
-	_, err := d.SaveTo(context.Background(), nil, dst, []string{"111-sha1"})
+	_, err := d.SaveTo(context.Background(), nil, dst, []model.Obj{&model.Object{ID: "111-sha1", Name: "第01集.mkv"}})
 	if err == nil || !strings.Contains(err.Error(), "115云盘账号") {
 		t.Fatalf("expected non-115 target rejection, got %v", err)
 	}

@@ -350,7 +350,7 @@ func (d *BaiduShare2) transferShare(bd *baidu_netdisk.BaiduNetdisk, dstPath stri
 
 // SaveTo 把分享对象(文件或目录)服务端转存到百度网盘账号存储的目标目录,实现 driver.ShareSaver 契约。
 // 目标账号由 dstStorage 明确指定;一次请求批量转存,不经服务器字节中转。
-func (d *BaiduShare2) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, ids []string) ([]string, error) {
+func (d *BaiduShare2) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, objs []model.Obj) ([]string, error) {
 	bd, ok := dstStorage.(*baidu_netdisk.BaiduNetdisk)
 	if !ok {
 		return nil, errors.New("目标存储不是百度网盘账号驱动,不支持服务端转存")
@@ -360,15 +360,19 @@ func (d *BaiduShare2) SaveTo(ctx context.Context, dstStorage driver.Driver, dstD
 			return nil, err
 		}
 	}
+	ids := make([]string, 0, len(objs))
+	for _, obj := range objs {
+		ids = append(ids, obj.GetID())
+	}
 	files, err := d.transferShare(bd, dstDir.GetPath(), ids)
 	if err != nil {
-		return nil, fmt.Errorf("转存 %d 个对象到 %v 失败: %w", len(ids), dstDir.GetPath(), err)
+		return nil, fmt.Errorf("转存 %d 个对象到 %v 失败: %w", len(objs), dstDir.GetPath(), err)
 	}
 	saved := make([]string, 0, len(files))
 	for _, f := range files {
 		saved = append(saved, f.GetID())
 	}
-	log.Infof("[BaiduShare2] 服务端转存 %d 个对象到 %v(账号 %v)", len(ids), dstDir.GetPath(), bd.ID)
+	log.Infof("[BaiduShare2] 服务端转存 %d 个对象到 %v(账号 %v)", len(objs), dstDir.GetPath(), bd.ID)
 	return saved, nil
 }
 
