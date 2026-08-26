@@ -18,6 +18,7 @@ import (
 	quark "github.com/OpenListTeam/OpenList/v4/drivers/quark_uc"
 	"github.com/OpenListTeam/OpenList/v4/drivers/quark_uc_tv"
 	"github.com/OpenListTeam/OpenList/v4/internal/cache"
+	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
@@ -525,6 +526,22 @@ func (d *QuarkUCShare) saveShareFile(ctx context.Context, binding shareRequestBi
 }
 
 func (d *QuarkUCShare) doSaveShareFile(ctx context.Context, binding shareRequestBinding, parsed shareFileID) (model.Obj, error) {
+	newFileID, dirID, err := d.saveOneCore(ctx, binding, parsed, binding.tempDirID())
+	if err != nil {
+		return nil, err
+	}
+	file, err := binding.getTempFile(ctx, dirID, newFileID)
+	if err != nil {
+		log.Warnf("get temp file failed: %v", err)
+		return nil, err
+	}
+	log.Debugf("new file: %+v", file)
+	return file, nil
+}
+
+// saveOneCore 服务端转存单个分享对象(文件或目录)到指定目录,返回新对象 fid 与所在目录 fid。
+// 目录 fid 由网盘侧递归转存。保留 fid_token/stoken 失效重试链。
+func (d *QuarkUCShare) saveOneCore(ctx context.Context, binding shareRequestBinding, parsed shareFileID, toPdirFid string) (string, string, error) {
 	fidToken := parsed.FidToken
 	stRefreshed := false
 	// 上限 3 次:fid_token 刷新 + stoken 刷新各占一次重试余量。
@@ -533,7 +550,7 @@ func (d *QuarkUCShare) doSaveShareFile(ctx context.Context, binding shareRequest
 			"fid_list":       []string{parsed.FileID},
 			"fid_token_list": []string{fidToken},
 			"exclude_fids":   []string{},
-			"to_pdir_fid":    binding.tempDirID(),
+			"to_pdir_fid":    toPdirFid,
 			"pwd_id":         d.ShareId,
 			"stoken":         d.ShareToken,
 			"pdir_fid":       "0",
@@ -555,12 +572,12 @@ func (d *QuarkUCShare) doSaveShareFile(ctx context.Context, binding shareRequest
 		if err != nil {
 			msg := err.Error()
 			log.Warnf("[save-debug] fid=%s fidToken=%s stoken=%q to_pdir=%s err=%s",
-				parsed.FileID, fidToken, d.ShareToken, binding.tempDirID(), msg)
+				parsed.FileID, fidToken, d.ShareToken, toPdirFid, msg)
 			// fid_token 过期:按父目录重新换一个 share_fid_token 再试一次。
 			if strings.Contains(msg, "token校验异常") && parsed.ParentID != "" {
 				fidToken, err = d.getFileToken(binding, parsed.ParentID, parsed.FileID)
 				if err != nil {
-					return nil, err
+					return "", "", err
 				}
 				continue
 			}
@@ -574,26 +591,43 @@ func (d *QuarkUCShare) doSaveShareFile(ctx context.Context, binding shareRequest
 				}
 			}
 			log.Warnf("save file failed: %v", err)
-			return nil, err
+			return "", "", err
 		}
 		if resp.Status != 200 {
-			return nil, errors.New(resp.Message)
+			return "", "", errors.New(resp.Message)
 		}
 		log.Debugf("save file task id: %v", resp.Data.TaskId)
 		newFileID, dirID, err := d.getSaveTaskResult(ctx, binding, resp.Data.TaskId)
 		if err != nil {
-			return nil, err
+			return "", "", err
 		}
 		log.Debugf("new file id: %v dirId: %v", newFileID, dirID)
-		file, err := binding.getTempFile(ctx, dirID, newFileID)
-		if err != nil {
-			log.Warnf("get temp file failed: %v", err)
-			return nil, err
-		}
-		log.Debugf("new file: %+v", file)
-		return file, nil
+		return newFileID, dirID, nil
 	}
-	return nil, errors.New("save file failed")
+	return "", "", errors.New("save file failed")
+}
+
+// SaveTo 把分享对象(文件或目录)服务端转存到同族账号存储的目标目录,实现 driver.ShareSaver 契约。
+// 目标账号由 dstStorage 明确指定(非轮询);不走临时目录、不进缓存、不登记删除。
+func (d *QuarkUCShare) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, ids []string) ([]string, error) {
+	uc, ok := dstStorage.(*quark.QuarkOrUC)
+	if !ok || uc.Config().Name != d.getDriverName() {
+		return nil, fmt.Errorf("目标存储不是%s账号驱动,不支持服务端转存", d.getDriverName())
+	}
+	binding := bindRequestDriver(uc)
+	saved := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parsed, err := parseShareFileID(id)
+		if err != nil {
+			return saved, err
+		}
+		newFid, _, err := d.saveOneCore(ctx, binding, parsed, dstDir.GetID())
+		if err != nil {
+			return saved, fmt.Errorf("转存 %s 失败: %w", id, err)
+		}
+		saved = append(saved, newFid)
+	}
+	return saved, nil
 }
 
 func (d *QuarkUCShare) getSaveTaskResult(ctx context.Context, binding shareRequestBinding, taskId string) (string, string, error) {

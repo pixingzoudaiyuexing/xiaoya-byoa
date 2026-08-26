@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/baidu_netdisk"
@@ -280,11 +281,27 @@ func (d *BaiduShare2) link(ctx context.Context, file model.Obj, args model.LinkA
 }
 
 func (d *BaiduShare2) saveFile(fid string, bd *baidu_netdisk.BaiduNetdisk) (model.Obj, error) {
+	files, err := d.transferShare(bd, "/"+conf.TempDirName, []string{fid})
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, errors.New("baidu transfer response missing extra.list")
+	}
+	return files[0], nil
+}
+
+// transferShare 调 /share/transfer 把分享对象(fs_id 列表)批量转存到目标账号的指定目录,
+// 返回新建对象(fs_id 与落盘路径)。目标目录须已存在(官方接口语义);目录对象由网盘侧整棵递归转存。
+func (d *BaiduShare2) transferShare(bd *baidu_netdisk.BaiduNetdisk, dstPath string, ids []string) ([]File, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
 	Cookie := cookie.SetStr(bd.Cookie, "BDCLND", d.Token)
-	decoded, err := url.QueryUnescape(d.Token)
+	decoded, _ := url.QueryUnescape(d.Token)
 	data := map[string]string{
-		"fsidlist": fmt.Sprintf("[%v]", fid),
-		"path":     "/" + conf.TempDirName,
+		"fsidlist": "[" + strings.Join(ids, ",") + "]",
+		"path":     dstPath,
 	}
 	query := map[string]string{
 		"app_id":     "250528",
@@ -319,11 +336,40 @@ func (d *BaiduShare2) saveFile(fid string, bd *baidu_netdisk.BaiduNetdisk) (mode
 		return nil, errors.New(utils.Json.Get(res.Body(), "show_msg").ToString())
 	}
 
-	file := File{
-		FileId: utils.Json.Get(res.Body(), "extra", "list", 0, "to_fs_id").ToInt64(),
-		Path:   utils.Json.Get(res.Body(), "extra", "list", 0, "to").ToString(),
+	files := []File{}
+	list := utils.Json.Get(res.Body(), "extra", "list")
+	for i := 0; i < list.Size(); i++ {
+		item := list.Get(i)
+		files = append(files, File{
+			FileId: item.Get("to_fs_id").ToInt64(),
+			Path:   item.Get("to").ToString(),
+		})
 	}
-	return file, nil
+	return files, nil
+}
+
+// SaveTo 把分享对象(文件或目录)服务端转存到百度网盘账号存储的目标目录,实现 driver.ShareSaver 契约。
+// 目标账号由 dstStorage 明确指定;一次请求批量转存,不经服务器字节中转。
+func (d *BaiduShare2) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, ids []string) ([]string, error) {
+	bd, ok := dstStorage.(*baidu_netdisk.BaiduNetdisk)
+	if !ok {
+		return nil, errors.New("目标存储不是百度网盘账号驱动,不支持服务端转存")
+	}
+	if d.Token == "" {
+		if err := d.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	files, err := d.transferShare(bd, dstDir.GetPath(), ids)
+	if err != nil {
+		return nil, fmt.Errorf("转存 %d 个对象到 %v 失败: %w", len(ids), dstDir.GetPath(), err)
+	}
+	saved := make([]string, 0, len(files))
+	for _, f := range files {
+		saved = append(saved, f.GetID())
+	}
+	log.Infof("[BaiduShare2] 服务端转存 %d 个对象到 %v(账号 %v)", len(ids), dstDir.GetPath(), bd.ID)
+	return saved, nil
 }
 
 func (d *BaiduShare2) delete(file model.Obj, bd *baidu_netdisk.BaiduNetdisk) {
@@ -365,4 +411,7 @@ func (d *BaiduShare2) Put(ctx context.Context, dstDir model.Obj, stream model.Fi
 	return errs.NotSupport
 }
 
-var _ driver.Driver = (*BaiduShare2)(nil)
+var (
+	_ driver.Driver     = (*BaiduShare2)(nil)
+	_ driver.ShareSaver = (*BaiduShare2)(nil)
+)

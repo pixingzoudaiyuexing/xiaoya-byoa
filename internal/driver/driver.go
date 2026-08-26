@@ -210,6 +210,19 @@ type LinkCacheModeResolver interface {
 	ResolveLinkCacheMode(path string) LinkCacheMode
 }
 
+// ShareSaver is implemented by share drivers that can save share objects
+// (files or directories) into an account storage of the same vendor,
+// server-side: no bytes are relayed through this server.
+// The endpoint probes this interface; drivers without it fall back to
+// cross-storage copy (byte relay) at the caller.
+type ShareSaver interface {
+	// SaveTo saves the share objects identified by ids (obj IDs as returned
+	// by List; a directory ID is saved recursively by the netdisk) into
+	// dstDir on dstStorage, which must be an account storage of the same
+	// vendor. Returns the IDs of the newly created objects.
+	SaveTo(ctx context.Context, dstStorage Driver, dstDir model.Obj, ids []string) ([]string, error)
+}
+
 type DirectUploader interface {
 	// GetDirectUploadTools returns available frontend-direct upload tools
 	GetDirectUploadTools() []string

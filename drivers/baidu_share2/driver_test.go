@@ -3,12 +3,16 @@ package baidu_share
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/OpenListTeam/OpenList/v4/drivers/baidu_netdisk"
 	"github.com/OpenListTeam/OpenList/v4/internal/cache"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/go-resty/resty/v2"
 )
 
 // stubResolvers 替换两条取链路径为可控桩函数,隔离 op/storage,返回还原函数。
@@ -209,5 +213,81 @@ func TestBaiduShare2Link_DirectDisabledSkipsDirect(t *testing.T) {
 	}
 	if !strings.HasPrefix(link.URL, "https://transfer/") {
 		t.Fatalf("expected 转存 link, got %s", link.URL)
+	}
+}
+
+// SaveTo 服务端转存:批量 fs_id 一次请求、sekey 用解码后的 Token、目标目录取 dstDir 路径;
+// 返回新建对象 fs_id 列表。非百度账号目标直接拒绝。
+func TestBaiduShare2SaveTo(t *testing.T) {
+	var gotPath, gotFsidList, gotSekey, gotShareId, gotFrom string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/share/transfer") {
+			t.Errorf("unexpected path: %v", r.URL.Path)
+		}
+		_ = r.ParseForm()
+		gotPath = r.Form.Get("path")
+		gotFsidList = r.Form.Get("fsidlist")
+		gotSekey = r.Form.Get("sekey")
+		gotShareId = r.URL.Query().Get("shareid")
+		gotFrom = r.URL.Query().Get("from")
+		_, _ = w.Write([]byte(`{"errno":0,"extra":{"list":[` +
+			`{"from_fs_id":111,"to":"/我的追剧/剧/第01集.mp4","to_fs_id":900001},` +
+			`{"from_fs_id":222,"to":"/我的追剧/剧/第02集.mp4","to_fs_id":900002}]}}`))
+	}))
+	defer srv.Close()
+
+	d := &BaiduShare2{ShareId: "123", ShareUk: "456", Token: "sec%2Bkey"}
+	d.client = resty.New().SetBaseURL(srv.URL)
+	bd := &baidu_netdisk.BaiduNetdisk{}
+	bd.Cookie = "BDUSS=abc"
+	dst := &model.Object{ID: "1", Name: "剧", Path: "/我的追剧/剧", IsFolder: true}
+
+	saved, err := d.SaveTo(context.Background(), bd, dst, []string{"111", "222"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if strings.Join(saved, ",") != "900001,900002" {
+		t.Errorf("expected new fs_ids [900001 900002], got %v", saved)
+	}
+	if gotPath != "/我的追剧/剧" {
+		t.Errorf("path param: got %q want /我的追剧/剧", gotPath)
+	}
+	if gotFsidList != "[111,222]" {
+		t.Errorf("fsidlist param: got %q want [111,222]", gotFsidList)
+	}
+	if gotSekey != "sec+key" {
+		t.Errorf("sekey param must be the decoded token: got %q want sec+key", gotSekey)
+	}
+	if gotShareId != "123" || gotFrom != "456" {
+		t.Errorf("shareid/from params: got %q/%q want 123/456", gotShareId, gotFrom)
+	}
+}
+
+// 转存接口报错(errno!=0)时须把 show_msg 作为错误上抛,由调用方回退字节中转 copy。
+func TestBaiduShare2SaveTo_ApiErrorPropagates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"errno":12,"show_msg":"文件已存在"}`))
+	}))
+	defer srv.Close()
+
+	d := &BaiduShare2{ShareId: "123", ShareUk: "456", Token: "seckey"}
+	d.client = resty.New().SetBaseURL(srv.URL)
+	bd := &baidu_netdisk.BaiduNetdisk{}
+	dst := &model.Object{ID: "1", Name: "剧", Path: "/我的追剧/剧", IsFolder: true}
+
+	_, err := d.SaveTo(context.Background(), bd, dst, []string{"111"})
+	if err == nil || !strings.Contains(err.Error(), "文件已存在") {
+		t.Fatalf("expected api error to propagate, got %v", err)
+	}
+}
+
+// 目标存储不是百度网盘账号驱动(如夸克账号)时拒绝,不发起任何请求。
+func TestBaiduShare2SaveTo_RejectsNonBaiduTarget(t *testing.T) {
+	d := &BaiduShare2{ShareId: "123", ShareUk: "456", Token: "seckey"}
+	dst := &model.Object{ID: "1", Name: "剧", Path: "/我的追剧/剧", IsFolder: true}
+
+	_, err := d.SaveTo(context.Background(), nil, dst, []string{"111"})
+	if err == nil || !strings.Contains(err.Error(), "百度网盘账号") {
+		t.Fatalf("expected non-baidu target rejection, got %v", err)
 	}
 }

@@ -240,6 +240,8 @@ func _fs(g *gin.RouterGroup) {
 	g.POST("/torrent/upload_parse", handles.UploadTorrentAndParse)
 	g.POST("/torrent/rapid_upload", handles.TorrentRapidUpload)
 	g.POST("/torrent/generate", handles.GenerateTorrentForPath)
+	// 分享服务端转存(源驱动实现 driver.ShareSaver 时可用)
+	g.POST("/share/save", handles.FsShareSave)
 	// Direct upload (client-side upload to storage)
 	g.POST("/get_direct_upload_info", middlewares.FsUp, handles.FsGetDirectUploadInfo)
 }
