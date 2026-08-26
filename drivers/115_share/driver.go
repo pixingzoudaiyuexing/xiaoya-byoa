@@ -210,4 +210,112 @@ func (d *Pan115Share) Put(ctx context.Context, dstDir model.Obj, stream model.Fi
 	return errs.NotSupport
 }
 
-var _ driver.Driver = (*Pan115Share)(nil)
+// shareReceiveURL 分享接收(转存)端点;声明为 var 便于单测替换(测试桩 httptest 服务器)。
+var shareReceiveURL = "https://webapi.115.com/share/receive"
+
+// listTargetIndex 列目标目录建索引(文件按 sha1、目录按名称 → fid);声明为 var 便于单测替换。
+var listTargetIndex = func(client *driver115.Pan115Client, cid string) (map[string]string, error) {
+	files, err := client.List(cid)
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[string]string, len(*files))
+	for _, f := range *files {
+		key := "f:" + f.Sha1
+		if f.IsDirectory {
+			key = "d:" + f.Name
+		}
+		index[key] = f.FileID
+	}
+	return index, nil
+}
+
+type shareReceiveResp struct {
+	State   bool   `json:"state"`
+	Code    int    `json:"code"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+// SaveTo 把分享对象(文件或目录)服务端转存到 115 云盘账号(cookie 版)存储的目标目录,
+// 实现 driver.ShareSaver 契约:webapi share/receive 的 cid 参数直达目标目录,不经服务器字节中转。
+// 仅 cookie 版账号驱动可转存(开放平台无分享接收接口);目录对象由网盘侧整棵递归转存。
+// 响应体不带新对象 fid 的稳定字段,新 id 经转存前后目标目录清单差集解析(文件按 sha1、目录按名称)。
+func (d *Pan115Share) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, ids []string) ([]string, error) {
+	pan115, ok := dstStorage.(*_115.Pan115)
+	if !ok {
+		return nil, errors.New("目标存储不是115云盘账号(cookie 版)驱动,不支持服务端转存")
+	}
+	return d.saveTo(ctx, pan115, pan115.GetClient(), dstDir, ids)
+}
+
+func (d *Pan115Share) saveTo(ctx context.Context, pan115 *_115.Pan115, client *driver115.Pan115Client, dstDir model.Obj, ids []string) ([]string, error) {
+	if err := pan115.WaitLimit(ctx); err != nil {
+		return nil, err
+	}
+	cid := dstDir.GetID()
+
+	// 分享对象 id:文件为「fid-sha1」复合(Link 同款拆法),目录为裸 cid;file_id 参数只要 fid
+	fids := make([]string, 0, len(ids))
+	for _, id := range ids {
+		fids = append(fids, strings.SplitN(id, "-", 2)[0])
+	}
+
+	before, err := listTargetIndex(client, cid)
+	if err != nil {
+		log.Debugf("[115-share] list target dir before receive failed: %v", err)
+		before = nil // 转存不阻断,只是事后解析不了新 id
+	}
+
+	result := shareReceiveResp{}
+	referer := "https://115cdn.com/s/" + d.ShareCode + "?password=" + d.ReceiveCode + "&"
+	resp, err := client.NewRequest().
+		SetFormData(map[string]string{
+			"share_code":   d.ShareCode,
+			"receive_code": d.ReceiveCode,
+			"file_id":      strings.Join(fids, ","),
+			"cid":          cid,
+		}).
+		SetHeader("Referer", referer).
+		SetResult(&result).
+		ForceContentType("application/json;charset=UTF-8").
+		Post(shareReceiveURL)
+	if err != nil {
+		return nil, err
+	}
+	if !result.State {
+		msg := result.Error
+		if msg == "" {
+			msg = result.Message
+		}
+		if msg == "" {
+			msg = resp.String()
+		}
+		return nil, errors.New(msg)
+	}
+	log.Infof("[%v] 115服务端转存 %d 个对象到 %v", pan115.ID, len(ids), dstDir.GetPath())
+
+	if before == nil {
+		return []string{}, nil
+	}
+	if err := pan115.WaitLimit(ctx); err != nil {
+		return nil, err
+	}
+	after, err := listTargetIndex(client, cid)
+	if err != nil {
+		log.Debugf("[115-share] list target dir after receive failed: %v", err)
+		return []string{}, nil
+	}
+	saved := make([]string, 0, len(ids))
+	for key, fid := range after {
+		if _, existed := before[key]; !existed {
+			saved = append(saved, fid)
+		}
+	}
+	return saved, nil
+}
+
+var (
+	_ driver.Driver     = (*Pan115Share)(nil)
+	_ driver.ShareSaver = (*Pan115Share)(nil)
+)
