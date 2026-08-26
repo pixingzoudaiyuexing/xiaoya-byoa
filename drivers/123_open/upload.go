@@ -207,18 +207,23 @@ func (d *Open123) sha1Reuse(parentFileID int64, filename string, sha1Hash string
 // 返回 reuse=true 表示命中,fileID 为目标文件 id;reuse=false 表示未命中,调用方应回退。
 // 秒传文件落到 alist-tvbox-temp(d.TempDirId),便于延时清理;未就绪则落根目录。
 func (d *Open123) Reuse(hashType *utils.HashType, hash, filename string, size int64, duplicate int) (reuse bool, fileID int64, err error) {
+	return d.ReuseTo(d.TempDirId, hashType, hash, filename, size, duplicate)
+}
+
+// ReuseTo 纯 hash 秒传到指定目录(share 驱动 driver.ShareSaver 契约用,目标目录由调用方给定;
+// Reuse 固定落临时目录供 123_rapid)。hash 语义同 Reuse:SHA1 走 sha1_reuse,MD5 走 file/create(etag=md5)。
+func (d *Open123) ReuseTo(parentFileID int64, hashType *utils.HashType, hash, filename string, size int64, duplicate int) (reuse bool, fileID int64, err error) {
 	if len(filename) == 0 {
 		return false, 0, fmt.Errorf("reuse: empty filename")
 	}
-	parent := d.TempDirId
 	if hashType == utils.SHA1 {
-		resp, e := d.sha1Reuse(parent, filename, hash, size, duplicate)
+		resp, e := d.sha1Reuse(parentFileID, filename, hash, size, duplicate)
 		if e != nil {
 			return false, 0, e
 		}
 		return resp.Data.Reuse, resp.Data.FileID, nil
 	}
-	resp, e := d.create(parent, filename, hash, size, duplicate, false)
+	resp, e := d.create(parentFileID, filename, hash, size, duplicate, false)
 	if e != nil {
 		return false, 0, e
 	}

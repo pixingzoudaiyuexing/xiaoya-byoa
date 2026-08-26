@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	_123 "github.com/OpenListTeam/OpenList/v4/drivers/123"
+	_123_open "github.com/OpenListTeam/OpenList/v4/drivers/123_open"
+	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 )
 
@@ -210,5 +213,146 @@ func TestPan123ShareLink_TrafficLimitRapidFallback(t *testing.T) {
 	}
 	if link == nil || link.URL != "https://example.com/rapid-123" {
 		t.Fatalf("expected rapid fallback link, got %+v", link)
+	}
+}
+
+// restore123Vars 还原 SaveTo 可替换桩。
+func restore123Vars(task func(ctx context.Context, pan *_123.Pan123, data base.Json) (int64, error),
+	wait func(ctx context.Context, pan *_123.Pan123, taskID int64) error,
+	list func(ctx context.Context, pan *_123.Pan123, dir model.Obj) (map[string]struct{}, error)) func() {
+	origTask, origWait, origList, origReuse := save123Task, wait123SaveTask, list123Target, open123ReuseTo
+	save123Task, wait123SaveTask, list123Target = task, wait, list
+	return func() {
+		save123Task, wait123SaveTask, list123Target, open123ReuseTo = origTask, origWait, origList, origReuse
+	}
+}
+
+// cookie 版目标:goapi copy/save,fileList 批量携带、目标目录落在每个条目的 parentFileID、
+// 目录条目 type=1;新 id 经转存前后目标目录差集解析(任务响应不回报新 id)。
+func TestPan123ShareSaveTo_CookieGoApi(t *testing.T) {
+	var gotData base.Json
+	calls := 0
+	restore := restore123Vars(
+		func(ctx context.Context, pan *_123.Pan123, data base.Json) (int64, error) {
+			gotData = data
+			return 53436542, nil
+		},
+		func(ctx context.Context, pan *_123.Pan123, taskID int64) error { return nil },
+		func(ctx context.Context, pan *_123.Pan123, dir model.Obj) (map[string]struct{}, error) {
+			calls++
+			if calls == 1 {
+				return map[string]struct{}{"old": {}}, nil
+			}
+			return map[string]struct{}{"old": {}, "9001": {}, "9002": {}}, nil
+		})
+	defer restore()
+
+	d := &Pan123Share{Addition: Addition{ShareKey: "MPrAjv", SharePwd: "ab12"}}
+	dst := &model.Object{ID: "32777979", Name: "我的追剧/剧名", IsFolder: true}
+	objs := []model.Obj{
+		File{FileName: "第01集.mkv", Size: 123, FileId: 101, Type: 0, Etag: "ABCD"},
+		File{FileName: "剧名", FileId: 102, Type: 1},
+	}
+
+	saved, err := d.SaveTo(context.Background(), &_123.Pan123{}, dst, objs)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if gotData["shareKey"] != "MPrAjv" || gotData["sharePwd"] != "ab12" {
+		t.Errorf("share params mismatch: %v", gotData)
+	}
+	list, _ := gotData["fileList"].([]map[string]interface{})
+	if len(list) != 2 {
+		t.Fatalf("fileList len: got %d want 2", len(list))
+	}
+	if list[0]["fileID"] != int64(101) || list[0]["etag"] != "ABCD" || list[0]["type"] != 0 ||
+		list[0]["parentFileID"] != int64(32777979) || list[0]["fileName"] != "第01集.mkv" || list[0]["driveID"] != 0 {
+		t.Errorf("file entry mismatch: %v", list[0])
+	}
+	if list[1]["type"] != 1 || list[1]["parentFileID"] != int64(32777979) {
+		t.Errorf("dir entry must carry type=1 and target parent: %v", list[1])
+	}
+	got := map[string]bool{}
+	for _, id := range saved {
+		got[id] = true
+	}
+	if !got["9001"] || !got["9002"] || got["old"] {
+		t.Errorf("diff must return only new ids, got %v", saved)
+	}
+}
+
+// 开放平台目标:按 Etag(MD5)秒传;目录对象回退字节中转。
+func TestPan123ShareSaveTo_OpenRapid(t *testing.T) {
+	var gotParent int64
+	var gotHash, gotName string
+	calls := 0
+	restore := restore123Vars(nil, nil, nil)
+	open123ReuseTo = func(open *_123_open.Open123, parentFileID int64, hash, filename string, size int64) (bool, int64, error) {
+		calls++
+		gotParent, gotHash, gotName = parentFileID, hash, filename
+		return true, int64(9000 + calls), nil
+	}
+	defer restore()
+
+	d := &Pan123Share{}
+	dst := &model.Object{ID: "888", Name: "我的追剧/剧名", IsFolder: true}
+	saved, err := d.SaveTo(context.Background(), &_123_open.Open123{}, dst,
+		[]model.Obj{File{FileName: "第01集.mkv", Size: 123, FileId: 101, Etag: "ABCD"}})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if gotParent != 888 || gotHash != "ABCD" || gotName != "第01集.mkv" {
+		t.Errorf("reuse params mismatch: %d %s %s", gotParent, gotHash, gotName)
+	}
+	if len(saved) != 1 || saved[0] != "9001" {
+		t.Errorf("saved ids: got %v want [9001]", saved)
+	}
+
+	_, err = d.SaveTo(context.Background(), &_123_open.Open123{}, dst,
+		[]model.Obj{File{FileName: "剧名", FileId: 102, Type: 1}})
+	if err == nil || !strings.Contains(err.Error(), "目录") {
+		t.Fatalf("expected dir rejection on open target, got %v", err)
+	}
+}
+
+// 任务提交失败错误上抛,由调用方回退字节中转 copy。
+func TestPan123ShareSaveTo_TaskErrorPropagates(t *testing.T) {
+	restore := restore123Vars(
+		func(ctx context.Context, pan *_123.Pan123, data base.Json) (int64, error) {
+			return 0, errors.New("空间不足")
+		}, nil,
+		func(ctx context.Context, pan *_123.Pan123, dir model.Obj) (map[string]struct{}, error) {
+			return map[string]struct{}{}, nil
+		})
+	defer restore()
+
+	d := &Pan123Share{}
+	dst := &model.Object{ID: "1", Name: "剧", IsFolder: true}
+	_, err := d.SaveTo(context.Background(), &_123.Pan123{}, dst,
+		[]model.Obj{File{FileName: "第01集.mkv", Size: 1, FileId: 101}})
+	if err == nil || !strings.Contains(err.Error(), "空间不足") {
+		t.Fatalf("expected task error to propagate, got %v", err)
+	}
+}
+
+// 目标存储不是 123 账号驱动时拒绝,不发起任何请求。
+func TestPan123ShareSaveTo_RejectsNon123Target(t *testing.T) {
+	called := false
+	restore := restore123Vars(
+		func(ctx context.Context, pan *_123.Pan123, data base.Json) (int64, error) {
+			called = true
+			return 0, nil
+		}, nil, nil)
+	defer restore()
+
+	d := &Pan123Share{}
+	dst := &model.Object{ID: "1", Name: "剧", IsFolder: true}
+	_, err := d.SaveTo(context.Background(), nil, dst,
+		[]model.Obj{File{FileName: "第01集.mkv", Size: 1, FileId: 101}})
+	if err == nil || !strings.Contains(err.Error(), "123网盘账号") {
+		t.Fatalf("expected non-123 target rejection, got %v", err)
+	}
+	if called {
+		t.Fatal("rejection must not trigger any task")
 	}
 }
