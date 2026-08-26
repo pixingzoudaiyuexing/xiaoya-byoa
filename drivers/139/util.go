@@ -1378,3 +1378,39 @@ func (d *Yun139) getFamilyRootPath(cloudID string) (string, error) {
 	}
 	return "", fmt.Errorf("no path found in family response")
 }
+
+// PostEncryptedShare 发送分享域加密请求(请求体为已加密密文,账号侧同款请求头,
+// mcloud-sign 按密文计算),返回原始(加密)响应体。供 139_share 的服务端转存使用。
+func (d *Yun139) PostEncryptedShare(u string, encryptedBody string) ([]byte, error) {
+	req := base.RestyClient.R()
+	randStr := random.String(16)
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	sign := calSign(encryptedBody, ts, randStr)
+	svcType := "1"
+	if d.isFamily() {
+		svcType = "2"
+	}
+	req.SetHeaders(map[string]string{
+		"Accept":                 "application/json, text/plain, */*",
+		"Content-Type":           "application/json;charset=UTF-8",
+		"Authorization":          "Basic " + d.getAuthorization(),
+		"mcloud-channel":         "1000101",
+		"mcloud-client":          "10701",
+		"mcloud-sign":            fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
+		"mcloud-version":         "7.14.0",
+		"Origin":                 "https://yun.139.com",
+		"Referer":                "https://yun.139.com/",
+		"x-DeviceInfo":           "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||",
+		"x-huawei-channelSrc":    "10000034",
+		"x-inner-ntwk":           "2",
+		"x-m4c-caller":           "PC",
+		"x-m4c-src":              "10002",
+		"x-SvcType":              svcType,
+		"Inner-Hcy-Router-Https": "1",
+	})
+	res, err := req.SetBody(encryptedBody).Post(u)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body(), nil
+}

@@ -2,14 +2,17 @@ package _139_share
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	_139 "github.com/OpenListTeam/OpenList/v4/drivers/139"
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
+	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"net/http"
@@ -277,4 +280,106 @@ func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
 	}
 
 	return data[:len(data)-padding], nil
+}
+
+const (
+	// 转存走 IBatchOprTask 族(加密信封同 IOutLink):创建外链批量转存任务 + 轮询任务明细
+	shareSaveURL      = "https://share-kd-njs.yun.139.com/yun-share/richlifeApp/devapp/IBatchOprTask/createOuterLinkBatchOprTask"
+	shareSaveQueryURL = "https://share-kd-njs.yun.139.com/yun-share/richlifeApp/devapp/IBatchOprTask/queryBatchOprTaskDetail"
+)
+
+func (y *Yun139Share) postEncrypted(url string, params map[string]interface{}, yun139 *_139.Yun139) (string, error) {
+	jsonData, err := json.Marshal(params)
+	if err != nil {
+		return "", err
+	}
+	encrypted, err := encrypt(string(jsonData))
+	if err != nil {
+		return "", err
+	}
+	resp, err := yun139.PostEncryptedShare(url, encrypted)
+	if err != nil {
+		return "", err
+	}
+	return decrypt(string(resp))
+}
+
+// save139Task 提交外链转存任务并轮询至完成(真实实现);声明为 var 便于单测替换。
+// 契约(网页端实测):taskType=1 转存,文件/目录分列 contentInfoList/catalogInfoList(目录整棵),
+// newCatalogID=目标目录;任务明细 taskStatus=2 完成,idRspInfo 给 srcId→rstId 新 id 映射。
+var save139Task = func(ctx context.Context, y *Yun139Share, yun139 *_139.Yun139, contentIDs, catalogIDs []string, newCatalogID, newCatalogName string) ([]string, error) {
+	needPwd := y.SharePwd != ""
+	params := map[string]interface{}{
+		"createOuterLinkBatchOprTaskReq": map[string]interface{}{
+			"msisdn":       yun139.Account,
+			"ownerAccount": "",
+			"taskType":     1,
+			"taskInfo": map[string]interface{}{
+				"contentInfoList": contentIDs,
+				"catalogInfoList": catalogIDs,
+				"newCatalogID":    newCatalogID,
+				"linkID":          y.ShareId,
+				"newCatalogName":  newCatalogName,
+				"needPassword":    needPwd,
+			},
+			"linkID":       y.ShareId,
+			"needPassword": needPwd,
+		},
+		"commonAccountInfo": map[string]interface{}{"account": yun139.Account, "accountType": 1},
+	}
+	decrypted, err := y.postEncrypted(shareSaveURL, params, yun139)
+	if err != nil {
+		return nil, err
+	}
+	if utils.Json.Get([]byte(decrypted), "resultCode").ToString() != "0" {
+		return nil, errors.New(utils.Json.Get([]byte(decrypted), "desc").ToString())
+	}
+	taskID := utils.Json.Get([]byte(decrypted), "data", "taskID").ToString()
+	if taskID == "" {
+		return nil, errors.New("createOuterLinkBatchOprTask 未返回任务号")
+	}
+
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		query := map[string]interface{}{
+			"queryBatchOprTaskDetailReq": map[string]interface{}{
+				"taskID":            taskID,
+				"msisdn":            yun139.Account,
+				"commonAccountInfo": map[string]interface{}{"account": yun139.Account, "accountType": 1},
+			},
+		}
+		detail, err := y.postEncrypted(shareSaveQueryURL, query, yun139)
+		if err != nil {
+			return nil, err
+		}
+		if utils.Json.Get([]byte(detail), "resultCode").ToString() != "0" {
+			return nil, errors.New(utils.Json.Get([]byte(detail), "desc").ToString())
+		}
+		if utils.Json.Get([]byte(detail), "data", "batchOprTask", "taskStatus").ToInt() == 2 {
+			resultCode := utils.Json.Get([]byte(detail), "data", "batchOprTask", "taskResultCode").ToInt()
+			if resultCode != 0 && resultCode != 1 {
+				return nil, fmt.Errorf("转存任务失败(taskResultCode=%d)", resultCode)
+			}
+			saved := make([]string, 0, len(contentIDs)+len(catalogIDs))
+			for _, key := range []string{"catalogList", "contentList"} {
+				list := utils.Json.Get([]byte(detail), "data", key, "idRspInfo")
+				for i := 0; i < list.Size(); i++ {
+					if list.Get(i).Get("reason").ToString() == "0000" {
+						if rst := list.Get(i).Get("rstId").ToString(); rst != "" {
+							saved = append(saved, rst)
+						}
+					}
+				}
+			}
+			return saved, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, errors.New("转存任务超时未完成")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
