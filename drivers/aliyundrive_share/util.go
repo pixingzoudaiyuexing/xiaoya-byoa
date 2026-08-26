@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
+	"github.com/OpenListTeam/OpenList/v4/drivers/aliyundrive_open"
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
+	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
+	"github.com/go-resty/resty/v2"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -155,4 +159,86 @@ func (d *AliyundriveShare) getFiles(ctx context.Context, fileId string) ([]File,
 		d.DriveId = files[0].DriveId
 	}
 	return files, nil
+}
+
+// requestAli 用目标账号(开放平台)的网页系 token 调 api.alipan.com,分享 token 作 X-Share-Token;
+// 双 token 失效自愈:AccessTokenInvalid → RefreshAliToken,ShareLinkTokenInvalid → getShareToken。
+func (d *AliyundriveShare) requestAli(ctx context.Context, ali *aliyundrive_open.AliyundriveOpen, url, method string, callback base.ReqCallback) ([]byte, error) {
+	if err := d.wait(ctx, limiterOther); err != nil {
+		return nil, err
+	}
+	var e ErrorResp
+	req := base.RestyClient.R().
+		SetError(&e).
+		SetHeader("content-type", "application/json").
+		SetHeader("Referer", "https://www.alipan.com/").
+		SetHeader("Authorization", "Bearer\t"+ali.AccessToken2).
+		SetHeader(CanaryHeaderKey, CanaryHeaderValue).
+		SetHeader("x-share-token", d.ShareToken)
+	if callback != nil {
+		callback(req)
+	} else {
+		req.SetBody("{}")
+	}
+	resp, err := req.Execute(method, url)
+	if err != nil {
+		return nil, err
+	}
+	if e.Code != "" {
+		if e.Code == "AccessTokenInvalid" || e.Code == "ShareLinkTokenInvalid" {
+			var err error
+			if e.Code == "AccessTokenInvalid" {
+				err = ali.RefreshAliToken(true)
+			} else {
+				err = d.getShareToken(ctx)
+			}
+			if err != nil {
+				return nil, err
+			}
+			return d.requestAli(ctx, ali, url, method, callback)
+		}
+		return nil, errors.New(e.Code + ": " + e.Message)
+	}
+	return resp.Body(), nil
+}
+
+// aliShareCopyOne 单对象 file/copy 转存(真实实现,v4/batch 信封与 aliyundrive_share2_open
+// 取链兜底 saveFile 同款);声明为 var 便于单测替换。返回新对象 file_id。
+var aliShareCopyOne = func(ctx context.Context, d *AliyundriveShare, ali *aliyundrive_open.AliyundriveOpen, fileId, parentFileID string) (string, error) {
+	if d.ShareToken == "" {
+		if err := d.getShareToken(ctx); err != nil {
+			return "", err
+		}
+	}
+	data := base.Json{
+		"requests": []base.Json{
+			{
+				"body": base.Json{
+					"file_id":           fileId,
+					"share_id":          d.ShareId,
+					"auto_rename":       true,
+					"to_parent_file_id": parentFileID,
+					"to_drive_id":       ali.DriveId,
+				},
+				"headers": base.Json{
+					"Content-Type": "application/json",
+				},
+				"id":     "0",
+				"method": "POST",
+				"url":    "/file/copy",
+			},
+		},
+		"resource": "file",
+	}
+	res, err := d.requestAli(ctx, ali, "https://api.alipan.com/adrive/v4/batch", http.MethodPost, func(req *resty.Request) {
+		req.SetBody(data)
+	})
+	if err != nil {
+		return "", err
+	}
+	msg := utils.Json.Get(res, "responses", 0, "body", "message").ToString()
+	if msg != "" {
+		return "", errors.New(msg)
+	}
+	return utils.Json.Get(res, "responses", 0, "body", "file_id").ToString(), nil
 }

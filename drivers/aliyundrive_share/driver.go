@@ -2,9 +2,12 @@ package aliyundrive_share
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/OpenListTeam/OpenList/v4/drivers/aliyundrive_open"
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
@@ -127,3 +130,29 @@ func (d *AliyundriveShare) Other(ctx context.Context, args model.OtherArgs) (int
 }
 
 var _ driver.Driver = (*AliyundriveShare)(nil)
+
+var _ driver.ShareSaver = (*AliyundriveShare)(nil)
+
+// SaveTo 把分享对象(文件或目录)服务端转存到阿里云盘账号(开放平台)存储的目标目录,
+// 实现 driver.ShareSaver 契约:api.alipan.com v4/batch 信封内嵌 /file/copy,
+// to_parent_file_id 直达目标目录(aliyundrive_share2_open 取链兜底 saveFile 同款,那边硬编码临时目录);
+// 阿里 copy 对文件夹 file_id 整棵保存(auto_rename),响应 responses[0].body.file_id 即新对象 id;
+// 用户鉴权用目标账号的网页系 token(AccessToken2,失效自动 RefreshAliToken),分享 token 失效自动重取。
+func (d *AliyundriveShare) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, objs []model.Obj) ([]string, error) {
+	ali, ok := dstStorage.(*aliyundrive_open.AliyundriveOpen)
+	if !ok {
+		return nil, errors.New("目标存储不是阿里云盘账号(开放平台)驱动,不支持服务端转存")
+	}
+	saved := make([]string, 0, len(objs))
+	for _, obj := range objs {
+		newID, err := aliShareCopyOne(ctx, d, ali, obj.GetID(), dstDir.GetID())
+		if err != nil {
+			return saved, fmt.Errorf("转存 %s 失败: %w", obj.GetName(), err)
+		}
+		if newID != "" {
+			saved = append(saved, newID)
+		}
+	}
+	log.Infof("[%v] 阿里服务端转存 %d 个对象到 %v", ali.ID, len(objs), dstDir.GetPath())
+	return saved, nil
+}
