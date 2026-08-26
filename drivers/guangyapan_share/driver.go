@@ -585,3 +585,115 @@ func randomDeviceID() string {
 }
 
 var _ driver.Driver = (*GuangYaPanShare)(nil)
+
+var _ driver.ShareSaver = (*GuangYaPanShare)(nil)
+
+// listGuangyaTarget 目标目录 id 集(转存差集解析新 id);声明为 var 便于单测替换。
+var listGuangyaTarget = func(ctx context.Context, account *guangyapan.GuangYaPan, dir model.Obj) (map[string]struct{}, error) {
+	files, err := account.List(ctx, dir, model.ListArgs{})
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		index[f.GetID()] = struct{}{}
+	}
+	return index, nil
+}
+
+// saveGuangyaTask 提交转存任务并等待完成(真实实现:restoreShareTo + waitTaskDone);
+// 声明为 var 便于单测替换。
+var saveGuangyaTask = func(ctx context.Context, d *GuangYaPanShare, account *guangyapan.GuangYaPan, fileIDs []string, parentID string) (string, error) {
+	taskID, err := d.restoreShareTo(ctx, account, fileIDs, parentID)
+	if err != nil || taskID == "" {
+		return taskID, err
+	}
+	return taskID, d.waitTaskDone(ctx, account, taskID)
+}
+
+// restoreShareTo 批量转存到指定目录(取链兜底 restoreShare 的目标目录参数化+批量版);
+// code=219 = 目标已存在,视为成功(无任务号);分享 token 失效自动重取重试一次。
+func (d *GuangYaPanShare) restoreShareTo(ctx context.Context, account *guangyapan.GuangYaPan, fileIDs []string, parentID string) (string, error) {
+	body := map[string]any{
+		"accessToken": d.ShareAccessToken,
+		"fileIds":     fileIDs,
+		"parentId":    parentID,
+	}
+	var out restoreShareResp
+	if err := d.postAccountAPI(ctx, account, "/userres/v1/restore_share", body, &out); err != nil {
+		return "", err
+	}
+	if out.Code == 219 {
+		return "", nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(out.Msg), "success") && isShareTokenMessage(out.Msg) {
+		if err := d.getShareAccessToken(ctx); err != nil {
+			return "", err
+		}
+		body["accessToken"] = d.ShareAccessToken
+		if err := d.postAccountAPI(ctx, account, "/userres/v1/restore_share", body, &out); err != nil {
+			return "", err
+		}
+		if out.Code == 219 {
+			return "", nil
+		}
+	}
+	if !strings.EqualFold(strings.TrimSpace(out.Msg), "success") {
+		return "", fmt.Errorf("restore share failed: %s", strings.TrimSpace(out.Msg))
+	}
+	if strings.TrimSpace(out.Data.TaskID) == "" {
+		return "", errors.New("restore share failed: empty task id")
+	}
+	return strings.TrimSpace(out.Data.TaskID), nil
+}
+
+// SaveTo 把分享文件服务端转存到光鸭云盘账号存储的目标目录,实现 driver.ShareSaver 契约:
+// /userres/v1/restore_share 的 parentId 直达目标目录、fileIds 一次批量携带,提交后 waitTaskDone
+// 轮询异步任务直至完成;新对象 id 任务不批量回报,经转存前后目标目录差集解析。
+// restore_share 未见目录递归转存语义,目录对象回退字节中转(其下文件可逐个转存补齐)。
+func (d *GuangYaPanShare) SaveTo(ctx context.Context, dstStorage driver.Driver, dstDir model.Obj, objs []model.Obj) ([]string, error) {
+	account, ok := dstStorage.(*guangyapan.GuangYaPan)
+	if !ok {
+		return nil, errors.New("目标存储不是光鸭云盘账号驱动,不支持服务端转存")
+	}
+	if d.ShareAccessToken == "" {
+		if err := d.getShareAccessToken(ctx); err != nil {
+			return nil, err
+		}
+	}
+	ids := make([]string, 0, len(objs))
+	for _, obj := range objs {
+		if obj.IsDir() {
+			return nil, fmt.Errorf("目录不支持服务端转存: %s(整目录回退字节中转)", obj.GetName())
+		}
+		ids = append(ids, obj.GetID())
+	}
+
+	before, err := listGuangyaTarget(ctx, account, dstDir)
+	if err != nil {
+		log.Debugf("[guangya_share] list target dir before restore failed: %v", err)
+		before = nil // 差集解析不可用不阻断转存
+	}
+
+	_, err = saveGuangyaTask(ctx, d, account, ids, strings.TrimSpace(dstDir.GetID()))
+	if err != nil {
+		return nil, fmt.Errorf("restore_share 转存 %d 个文件失败: %w", len(objs), err)
+	}
+	log.Infof("[%v] 光鸭服务端转存 %d 个文件到 %v", account.ID, len(objs), dstDir.GetPath())
+
+	if before == nil {
+		return []string{}, nil
+	}
+	after, err := listGuangyaTarget(ctx, account, dstDir)
+	if err != nil {
+		log.Debugf("[guangya_share] list target dir after restore failed: %v", err)
+		return []string{}, nil
+	}
+	saved := make([]string, 0, len(objs))
+	for id := range after {
+		if _, existed := before[id]; !existed {
+			saved = append(saved, id)
+		}
+	}
+	return saved, nil
+}
