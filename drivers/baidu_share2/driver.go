@@ -29,6 +29,41 @@ import (
 var idx = 0
 var baiduShareLinkCache = cache.NewKeyedCache[*model.Link](time.Hour)
 
+// 瞬时错误:多为风控或 sekey(BDCLND)过期所致,清 Token 重新 Validate 后重试一次可自愈。
+// -21(分享被删除/违规)是永久错误,不在此列。
+var baiduTransientErrnos = map[int64]bool{-9: true, -62: true}
+
+func isBaiduTransientErrno(errno int64) bool {
+	return baiduTransientErrnos[errno]
+}
+
+// baiduErrnoMessage 把常见 errno 翻译成可读文案。-21 的文案命中 alist-tvbox 的失效分享
+// 清理关键字,让真死链能被自动清掉;-9 可能是风控引起的瞬时错误,不映射成失效文案。
+func baiduErrnoMessage(errno int64, body string) string {
+	switch errno {
+	case -21:
+		return "分享已取消或因违规无法访问(errno=-21)"
+	case -62:
+		return "触发百度风控,请稍后重试(errno=-62)"
+	default:
+		return body
+	}
+}
+
+// baiduAccountCookie 取第一个百度网盘账号的 Cookie。verify/开分享页带上账号 Cookie
+// 可显著降低 -62 风控(裸 netdisk UA 从服务器 IP 高频访问极易触发),并使 sekey 与账号同源。
+func (d *BaiduShare2) baiduAccountCookie() string {
+	storage := op.GetFirstDriver("BaiduNetdisk", 0)
+	if storage == nil {
+		return ""
+	}
+	bd, ok := storage.(*baidu_netdisk.BaiduNetdisk)
+	if !ok {
+		return ""
+	}
+	return bd.Cookie
+}
+
 // baiduShareDirectEnabled 是否启用百度分享免转存(DLNA 签名直链为主、转存兜底)。默认关:关时直接走转存。
 // 声明为 var 便于单测替换(测试里 op 未初始化,直接 setting.GetBool 会死锁)。
 var baiduShareDirectEnabled = func() bool {
@@ -94,13 +129,37 @@ func (d *BaiduShare2) Validate() error {
 			Message string `json:"err_msg"`
 			Token   string `json:"randsk"`
 		}{}
+		accountCookie := d.baiduAccountCookie()
+		if accountCookie != "" {
+			// 带账号 Cookie 开分享页,降低 -62 风控概率
+			res0, err := d.client.R().SetHeader("Cookie", accountCookie).Get("/s/" + d.Surl)
+			if err == nil {
+				if bdclnd := cookie.GetStr(mergeCookies(accountCookie, res0.Cookies()), "BDCLND"); bdclnd != "" {
+					accountCookie = cookie.SetStr(accountCookie, "BDCLND", bdclnd)
+				}
+			}
+		}
 		res, err := d.client.R().
 			SetFormData(data).
 			SetHeader("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8").
+			SetHeader("Cookie", accountCookie).
 			SetResult(&respJson).
 			Post(api)
 		if err != nil {
 			return err
+		}
+		if respJson.Errno == -62 {
+			// 风控:稍等重试一次
+			time.Sleep(2 * time.Second)
+			res, err = d.client.R().
+				SetFormData(data).
+				SetHeader("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8").
+				SetHeader("Cookie", accountCookie).
+				SetResult(&respJson).
+				Post(api)
+			if err != nil {
+				return err
+			}
 		}
 		log.Debugf("Baidu share verify response: %v", respJson)
 		if respJson.Errno != 0 {
@@ -108,7 +167,7 @@ func (d *BaiduShare2) Validate() error {
 			if msg == "" {
 				msg = res.String()
 			}
-			return errors.New(msg)
+			return errors.New(baiduErrnoMessage(respJson.Errno, msg))
 		}
 		d.Token = respJson.Token
 		log.Debugf("Baidu Share Token: %v", d.Token)
@@ -168,6 +227,7 @@ func (d *BaiduShare2) List(ctx context.Context, dir model.Obj, args model.ListAr
 	var err error
 	var page = 1
 	more := true
+	revalidated := false
 	for more && err == nil {
 		respJson := struct {
 			Errno int64 `json:"errno"`
@@ -222,9 +282,19 @@ func (d *BaiduShare2) List(ctx context.Context, dir model.Obj, args model.ListAr
 				if len(respJson.List) >= 100 {
 					more = true
 				}
-			} else {
-				err = fmt.Errorf("%s", res.Body())
-			}
+				} else {
+					// 瞬时错误(-9 sekey 过期/-62 风控):清 Token 重新 Validate 后重试本页一次
+					if !revalidated && isBaiduTransientErrno(respJson.Errno) {
+						revalidated = true
+						d.Token = ""
+						if verr := d.Validate(); verr == nil {
+							log.Infof("Baidu share list errno=%d, re-validated token and retrying page %d", respJson.Errno, page)
+							more = true
+							continue
+						}
+					}
+					err = fmt.Errorf("%s", res.Body())
+				}
 		}
 	}
 	return objs, err
