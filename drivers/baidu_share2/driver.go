@@ -45,6 +45,8 @@ func baiduErrnoMessage(errno int64, body string) string {
 		return "分享已取消或因违规无法访问(errno=-21)"
 	case -62:
 		return "触发百度风控,请稍后重试(errno=-62)"
+	case -65:
+		return "操作过于频繁,请稍后重试(errno=-65)"
 	default:
 		return body
 	}
