@@ -232,28 +232,35 @@ if [ "$STRICT_MODE" = true ]; then
   [ "$quark_count" -gt 0 ]
 fi
 
-# 只要本轮更新没有进入任何失败/跳过分支，并且 BYOA 归一化已经通过，就记录实际数据版本。
-# 采用“失败才落标记”的方式，避免依赖不同 /bin/sh 对成功分支状态的细节。
-if [ "$need_update" = true ] && [ ! -f "$UPDATE_BLOCKED" ]; then
+# 版本持久化只依赖最终文件/数据库状态，不再依赖 need_update 这类可能受上游脚本执行细节影响的 shell 状态。
+# 如果本轮更新明确失败/跳过，UPDATE_BLOCKED 会阻止写入；正常启动时重复写入同一版本是安全的。
+if [ ! -f "$UPDATE_BLOCKED" ]; then
   ACTUAL_VERSION=""
-  if [ -s /version.txt ]; then
-    ACTUAL_VERSION="$(tr -d '\r\n ' < /version.txt)"
-  fi
-  if { [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; } && [ -s /www/data/version.txt ]; then
-    ACTUAL_VERSION="$(tr -d '\r\n ' < /www/data/version.txt)"
-  fi
+  for candidate in /version.txt /www/data/version.txt /data/version.txt; do
+    if [ -s "$candidate" ]; then
+      candidate_version="$(tr -d '\r\n ' < "$candidate")"
+      if [ -n "$candidate_version" ] && valid_version "$candidate_version"; then
+        ACTUAL_VERSION="$candidate_version"
+        break
+      fi
+    fi
+  done
+
   if [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; then
     ACTUAL_VERSION="$REMOTE_VERSION"
   fi
-  if [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; then
+  if { [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; } && [ -s "$VERSION_FILE" ]; then
+    ACTUAL_VERSION="$(tr -d '\r\n ' < "$VERSION_FILE")"
+  fi
+  if [ "$UPDATE_MODE" != "never" ] && { [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; }; then
     ACTUAL_VERSION="$(fetch_remote_version || true)"
   fi
 
   if [ -n "$ACTUAL_VERSION" ] && valid_version "$ACTUAL_VERSION"; then
     printf '%s\n' "$ACTUAL_VERSION" > "$VERSION_FILE"
     log "已记录 Xiaoya 数据版本：${ACTUAL_VERSION}"
-  else
-    warn "更新成功但未取得有效 Xiaoya 数据版本；下次启动会重新检查"
+  elif [ "$UPDATE_MODE" != "never" ]; then
+    warn "未取得有效 Xiaoya 数据版本；保留现有内容，下次启动继续检查"
   fi
 fi
 
