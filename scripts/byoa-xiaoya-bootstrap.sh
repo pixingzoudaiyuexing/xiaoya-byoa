@@ -16,7 +16,8 @@ UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 REMOTE_VERSION=""
 ADMIN_BACKED_UP=false
-UPDATE_SUCCEEDED=false
+UPDATE_MARKER="/tmp/byoa-xiaoya-update.$$"
+rm -f "$UPDATE_MARKER"
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -197,16 +198,21 @@ if [ "$need_update" = true ]; then
     if [ ! -x /updateall ]; then
       warn "基础镜像缺少 /updateall"
       restore_admin || true
+      rm -f "$UPDATE_MARKER"
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
       fi
-    elif /updateall; then
-      UPDATE_SUCCEEDED=true
     else
-      warn "Xiaoya /updateall 执行失败"
-      restore_admin || true
-      if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
-        exit 1
+      # 先落一个进程级一次性标记。/updateall 成功返回后它自然保留；
+      # 失败路径明确删除。最终只有在数据库归一化也成功后才据此提交版本状态。
+      : > "$UPDATE_MARKER"
+      if ! /updateall; then
+        warn "Xiaoya /updateall 执行失败"
+        restore_admin || true
+        rm -f "$UPDATE_MARKER"
+        if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
+          exit 1
+        fi
       fi
     fi
   fi
@@ -214,6 +220,7 @@ fi
 
 if [ ! -s "$DB_PATH" ]; then
   warn "尚未生成 Xiaoya data.db，继续启动 PowerList 空库"
+  rm -f "$UPDATE_MARKER"
   exit 0
 fi
 
@@ -272,9 +279,9 @@ if [ "$STRICT_MODE" = true ]; then
   [ "$quark_count" -gt 0 ]
 fi
 
-# 内容数据库本身就是持久状态，因此把 Xiaoya 数据版本放进独立 byoa_state 表，
-# 避免 /updateall 对容器文件布局的重建影响版本标记。
-if [ "$UPDATE_SUCCEEDED" = true ]; then
+# 内容数据库本身就是持久状态，因此把 Xiaoya 数据版本放进独立 byoa_state 表。
+# 只有 /updateall 未失败、且后续 BYOA 数据归一化/数量检查走到这里时，才提交版本。
+if [ -f "$UPDATE_MARKER" ]; then
   committed_version="$(resolve_updated_version || true)"
   if [ -n "$committed_version" ] && valid_version "$committed_version"; then
     store_local_version "$committed_version"
@@ -283,3 +290,5 @@ if [ "$UPDATE_SUCCEEDED" = true ]; then
     warn "Xiaoya 更新成功，但未取得有效数据版本；下次启动会重新检查"
   fi
 fi
+
+rm -f "$UPDATE_MARKER"
