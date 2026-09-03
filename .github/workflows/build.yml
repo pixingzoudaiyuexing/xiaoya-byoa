@@ -119,6 +119,67 @@ jobs:
             printf "/opt/alist/data -> "; readlink -f /opt/alist/data 2>/dev/null || true
           '
 
+          probe_openlist() {
+            probe_name="$1"
+            shift
+            docker rm -f "$probe_name" >/dev/null 2>&1 || true
+            docker run -d \
+              --name "$probe_name" \
+              --entrypoint /opt/alist/alist \
+              xiaoya-byoa:ci \
+              "$@" >/dev/null
+            sleep 3
+            echo "=== ${probe_name} state ==="
+            docker inspect -f 'Running={{.State.Running}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Error={{.State.Error}}' "$probe_name" || true
+            echo "=== ${probe_name} logs ==="
+            docker logs "$probe_name" 2>&1 || true
+            if [ "$(docker inspect -f '{{.State.Running}}' "$probe_name" 2>/dev/null || true)" = "true" ]; then
+              docker rm -f "$probe_name" >/dev/null
+              return 0
+            fi
+            docker rm -f "$probe_name" >/dev/null 2>&1 || true
+            return 1
+          }
+
+          echo '=== Probe OpenList against a completely fresh data directory ==='
+          fresh_plain=0
+          fresh_no_prefix=0
+          probe_openlist byoa-probe-fresh-plain server --data /tmp/openlist-fresh --debug --log-std || fresh_plain=$?
+          probe_openlist byoa-probe-fresh-noprefix server --data /tmp/openlist-fresh --debug --log-std --no-prefix || fresh_no_prefix=$?
+          echo "Fresh probe rc: plain=${fresh_plain} no-prefix=${fresh_no_prefix}"
+
+          echo '=== Prepare Xiaoya-normalized data without starting entrypoint server ==='
+          diag_volume="xiaoya-byoa-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker volume create "$diag_volume" >/dev/null
+          docker run --rm \
+            --entrypoint sh \
+            -e BYOA_XIAOYA_STRICT=true \
+            -e BYOA_XIAOYA_UPDATE=if-newer \
+            -v "$diag_volume:/opt/alist/data" \
+            xiaoya-byoa:ci \
+            -c '/byoa-xiaoya-bootstrap.sh && /byoa-xiaoya-normalize.sh'
+
+          docker rm -f byoa-probe-xiaoya >/dev/null 2>&1 || true
+          docker run -d \
+            --name byoa-probe-xiaoya \
+            --entrypoint /opt/alist/alist \
+            -v "$diag_volume:/opt/alist/data" \
+            xiaoya-byoa:ci \
+            server --data /opt/alist/data --debug --log-std --no-prefix >/dev/null
+          sleep 3
+          echo '=== byoa-probe-xiaoya state ==='
+          docker inspect -f 'Running={{.State.Running}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Error={{.State.Error}}' byoa-probe-xiaoya || true
+          echo '=== byoa-probe-xiaoya logs ==='
+          docker logs byoa-probe-xiaoya 2>&1 || true
+          xiaoya_probe_running="$(docker inspect -f '{{.State.Running}}' byoa-probe-xiaoya 2>/dev/null || true)"
+          docker rm -f byoa-probe-xiaoya >/dev/null 2>&1 || true
+          docker volume rm -f "$diag_volume" >/dev/null 2>&1 || true
+
+          if [ "$fresh_plain" -ne 0 ] || [ "$fresh_no_prefix" -ne 0 ] || [ "$xiaoya_probe_running" != "true" ]; then
+            echo "Startup probe failed: plain=${fresh_plain} no-prefix=${fresh_no_prefix} xiaoya_running=${xiaoya_probe_running}" >&2
+            exit 1
+          fi
+
           # 诊断容器为何在 OpenList server 启动阶段整体退出。
           # docker events 会在容器被 smoke cleanup 删除后仍保留本轮 die/oom/kill 事件。
           : > /tmp/byoa-docker-events.log
