@@ -12,13 +12,13 @@ set -eu
 DATA_DIR="${BYOA_DATA_DIR:-/opt/alist/data}"
 DB_PATH="${DATA_DIR}/data.db"
 VERSION_FILE="${DATA_DIR}/xiaoya_data.version"
+VERSION_PENDING="${VERSION_FILE}.pending"
 XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoyaDev/data/main}"
 UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 REMOTE_VERSION=""
 ADMIN_BACKED_UP=false
-UPDATE_BLOCKED="/tmp/byoa-xiaoya-update-blocked.$$"
-rm -f "$UPDATE_BLOCKED"
+rm -f "$VERSION_PENDING"
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -38,6 +38,34 @@ fetch_remote_version() {
     printf '%s' "$value"
     return 0
   fi
+  return 1
+}
+
+stage_updated_version() {
+  candidate_version="$REMOTE_VERSION"
+
+  if [ -z "$candidate_version" ] || ! valid_version "$candidate_version"; then
+    for candidate_file in /version.txt /www/data/version.txt /data/version.txt; do
+      if [ -s "$candidate_file" ]; then
+        file_version="$(tr -d '\r\n ' < "$candidate_file")"
+        if [ -n "$file_version" ] && valid_version "$file_version"; then
+          candidate_version="$file_version"
+          break
+        fi
+      fi
+    done
+  fi
+
+  if [ -z "$candidate_version" ] || ! valid_version "$candidate_version"; then
+    candidate_version="$(fetch_remote_version || true)"
+  fi
+
+  if [ -n "$candidate_version" ] && valid_version "$candidate_version"; then
+    printf '%s\n' "$candidate_version" > "$VERSION_PENDING"
+    return 0
+  fi
+
+  warn "Xiaoya 更新成功，但未取得有效数据版本；下次启动会重新检查"
   return 1
 }
 
@@ -133,7 +161,6 @@ if [ "$need_update" = true ]; then
   # 已有库更新时若这个清单暂时下载失败，宁可继续保留旧库，也不要运行 updateall 后丢失 QuarkShare。
   if ! curl -fsSL --retry 3 "${XIAOYA_DATA_URL}/quarkshare_list.txt" -o /data/quarkshare_list.txt; then
     warn "下载 quarkshare_list.txt 失败"
-    : > "$UPDATE_BLOCKED"
     if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
       exit 1
     fi
@@ -141,28 +168,30 @@ if [ "$need_update" = true ]; then
     update_ready=false
   fi
 
-  if [ "$update_ready" = true ]; then
-    # Xiaoya /updateall 会改写 admin 的兼容 password 字段。已有库更新时先完整备份 admin 行，
-    # 更新后恢复，确保内容更新不改变本地管理账号。
-    if [ -s "$DB_PATH" ]; then
-      if ! backup_admin; then
-        : > "$UPDATE_BLOCKED"
-        if [ "$STRICT_MODE" = true ]; then
-          exit 1
-        fi
+  if [ "$update_ready" = true ] && [ -s "$DB_PATH" ]; then
+    # Xiaoya /updateall 会改写 admin 的兼容 password 字段。已有库更新时先完整备份 admin 行。
+    # 如果备份失败，非严格模式也跳过本次更新，宁可保留旧内容，不冒险改坏本地管理账号。
+    if ! backup_admin; then
+      if [ "$STRICT_MODE" = true ]; then
+        exit 1
       fi
+      warn "跳过本次 Xiaoya 内容更新，继续使用现有数据库"
+      update_ready=false
     fi
+  fi
 
+  if [ "$update_ready" = true ]; then
     if [ ! -x /updateall ]; then
       warn "基础镜像缺少 /updateall"
-      : > "$UPDATE_BLOCKED"
       restore_admin || true
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
       fi
-    elif ! /updateall; then
+    elif /updateall; then
+      # 只暂存版本号；必须等后面的数据库归一化和数量检查也成功，才会原子提交为正式版本文件。
+      stage_updated_version || true
+    else
       warn "Xiaoya /updateall 执行失败"
-      : > "$UPDATE_BLOCKED"
       restore_admin || true
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
@@ -173,7 +202,7 @@ fi
 
 if [ ! -s "$DB_PATH" ]; then
   warn "尚未生成 Xiaoya data.db，继续启动 PowerList 空库"
-  rm -f "$UPDATE_BLOCKED"
+  rm -f "$VERSION_PENDING"
   exit 0
 fi
 
@@ -232,36 +261,11 @@ if [ "$STRICT_MODE" = true ]; then
   [ "$quark_count" -gt 0 ]
 fi
 
-# 版本持久化只依赖最终文件/数据库状态，不再依赖 need_update 这类可能受上游脚本执行细节影响的 shell 状态。
-# 如果本轮更新明确失败/跳过，UPDATE_BLOCKED 会阻止写入；正常启动时重复写入同一版本是安全的。
-if [ ! -f "$UPDATE_BLOCKED" ]; then
-  ACTUAL_VERSION=""
-  for candidate in /version.txt /www/data/version.txt /data/version.txt; do
-    if [ -s "$candidate" ]; then
-      candidate_version="$(tr -d '\r\n ' < "$candidate")"
-      if [ -n "$candidate_version" ] && valid_version "$candidate_version"; then
-        ACTUAL_VERSION="$candidate_version"
-        break
-      fi
-    fi
-  done
-
-  if [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; then
-    ACTUAL_VERSION="$REMOTE_VERSION"
-  fi
-  if { [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; } && [ -s "$VERSION_FILE" ]; then
-    ACTUAL_VERSION="$(tr -d '\r\n ' < "$VERSION_FILE")"
-  fi
-  if [ "$UPDATE_MODE" != "never" ] && { [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; }; then
-    ACTUAL_VERSION="$(fetch_remote_version || true)"
-  fi
-
-  if [ -n "$ACTUAL_VERSION" ] && valid_version "$ACTUAL_VERSION"; then
-    printf '%s\n' "$ACTUAL_VERSION" > "$VERSION_FILE"
-    log "已记录 Xiaoya 数据版本：${ACTUAL_VERSION}"
-  elif [ "$UPDATE_MODE" != "never" ]; then
-    warn "未取得有效 Xiaoya 数据版本；保留现有内容，下次启动继续检查"
-  fi
+# 两阶段提交：只有 updateall 成功产生 pending，且 BYOA 数据归一化/数量检查走到这里后，才更新正式版本。
+if [ -s "$VERSION_PENDING" ]; then
+  committed_version="$(tr -d '\r\n ' < "$VERSION_PENDING")"
+  mv -f "$VERSION_PENDING" "$VERSION_FILE"
+  log "已记录 Xiaoya 数据版本：${committed_version}"
+else
+  rm -f "$VERSION_PENDING"
 fi
-
-rm -f "$UPDATE_BLOCKED"
