@@ -84,6 +84,17 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke build Xiaoya runtime image
+        if: matrix.target == 'linux-amd64-musl'
+        run: |
+          set -e
+          mkdir -p build/linux/amd64
+          cp build/openlist build/linux/amd64/alist
+          docker build \
+            --build-arg TARGETPLATFORM=linux/amd64 \
+            -f Dockerfile.ci \
+            -t xiaoya-byoa:ci .
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
