@@ -27,8 +27,13 @@ else
   fi
 
   # BYOA Xiaoya 首次启动：使用官方公开数据生成丰富目录，不要求服务器私人 Token。
+  # bootstrap 内部会自行降级处理“已有数据库 + 远端暂时不可用”等可恢复场景；
+  # 如果它最终仍返回失败，说明当前数据库没有完成安全归一化，不能继续启动服务。
   if [ "${BYOA_XIAOYA_BOOTSTRAP:-true}" = "true" ] && [ -x /byoa-xiaoya-bootstrap.sh ]; then
-    /byoa-xiaoya-bootstrap.sh
+    if ! /byoa-xiaoya-bootstrap.sh; then
+      echo "Error: BYOA Xiaoya bootstrap failed" >&2
+      exit 1
+    fi
   fi
 
   # Check file of /opt/openlist/data permissions for current user
