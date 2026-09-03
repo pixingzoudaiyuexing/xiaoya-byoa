@@ -23,8 +23,21 @@ warn() {
   printf '[BYOA Xiaoya] WARN: %s\n' "$*" >&2
 }
 
+# 只接受三段纯数字版本。与 bootstrap 使用相同的纯 shell 校验，
+# 避免 Xiaoya/Alpine 运行时 grep 实现差异导致合法版本被误判。
 valid_version() {
-  printf '%s' "$1" | grep -Eq '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'
+  version_value="$1"
+  old_ifs="$IFS"
+  IFS='.'
+  set -- $version_value
+  IFS="$old_ifs"
+  [ "$#" -eq 3 ] || return 1
+  for version_part in "$@"; do
+    case "$version_part" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+  done
+  return 0
 }
 
 sql_scalar() {
