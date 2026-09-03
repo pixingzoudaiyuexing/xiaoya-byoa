@@ -16,8 +16,6 @@ UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 REMOTE_VERSION=""
 ADMIN_BACKED_UP=false
-UPDATE_MARKER="${DATA_DIR}/.byoa_xiaoya_update"
-rm -f "$UPDATE_MARKER"
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -198,21 +196,29 @@ if [ "$need_update" = true ]; then
     if [ ! -x /updateall ]; then
       warn "基础镜像缺少 /updateall"
       restore_admin || true
-      rm -f "$UPDATE_MARKER"
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
       fi
-    else
-      # 标记放在持久化数据目录，而不是 /tmp；Xiaoya /updateall 会清理临时目录。
-      # /updateall 成功时标记自然保留；失败路径明确删除。
-      : > "$UPDATE_MARKER"
-      if ! /updateall; then
-        warn "Xiaoya /updateall 执行失败"
-        restore_admin || true
-        rm -f "$UPDATE_MARKER"
-        if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
+    elif /updateall; then
+      # /updateall 会重建自身管理的运行目录，因此不要依赖临时 marker。
+      # 它成功返回后立即把本次内容版本写入持久化 data.db；byoa_state 不属于
+      # Xiaoya update.sql 会 DROP 的表，后续容器重建仍可可靠读取。
+      committed_version="$(resolve_updated_version || true)"
+      if [ -n "$committed_version" ] && valid_version "$committed_version"; then
+        store_local_version "$committed_version"
+        log "已记录 Xiaoya 数据版本：${committed_version}"
+      else
+        warn "Xiaoya 更新成功，但未取得有效数据版本"
+        if [ "$STRICT_MODE" = true ]; then
+          restore_admin || true
           exit 1
         fi
+      fi
+    else
+      warn "Xiaoya /updateall 执行失败"
+      restore_admin || true
+      if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
+        exit 1
       fi
     fi
   fi
@@ -220,7 +226,6 @@ fi
 
 if [ ! -s "$DB_PATH" ]; then
   warn "尚未生成 Xiaoya data.db，继续启动 PowerList 空库"
-  rm -f "$UPDATE_MARKER"
   exit 0
 fi
 
@@ -278,17 +283,3 @@ if [ "$STRICT_MODE" = true ]; then
   [ "$ali_count" -gt 0 ]
   [ "$quark_count" -gt 0 ]
 fi
-
-# 内容数据库本身就是持久状态，因此把 Xiaoya 数据版本放进独立 byoa_state 表。
-# 只有 /updateall 未失败、且后续 BYOA 数据归一化/数量检查走到这里时，才提交版本。
-if [ -f "$UPDATE_MARKER" ]; then
-  committed_version="$(resolve_updated_version || true)"
-  if [ -n "$committed_version" ] && valid_version "$committed_version"; then
-    store_local_version "$committed_version"
-    log "已记录 Xiaoya 数据版本：${committed_version}"
-  else
-    warn "Xiaoya 更新成功，但未取得有效数据版本；下次启动会重新检查"
-  fi
-fi
-
-rm -f "$UPDATE_MARKER"
