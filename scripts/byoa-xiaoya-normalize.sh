@@ -7,13 +7,13 @@
 # - 删除服务端账号型驱动与历史私人凭据字段；
 # - 将 Xiaoya 内容版本写入持久化 data.db。
 #
-# 不使用 set -e：SQLite/网络失败全部显式捕获，避免首启时无日志退出。
-set -u
+# 所有关键失败都显式处理，避免 Alpine / BusyBox shell 因复合命令状态静默退出。
 
 DATA_DIR="${BYOA_DATA_DIR:-/opt/alist/data}"
 DB_PATH="${DATA_DIR}/data.db"
 XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoyaDev/data/main}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
+VERSION_TMP="/tmp/byoa-xiaoya-version.$$"
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -27,29 +27,15 @@ valid_version() {
   printf '%s' "$1" | grep -Eq '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'
 }
 
-resolve_version() {
-  for candidate_file in /version.txt /www/data/version.txt /data/version.txt; do
-    if [ -s "$candidate_file" ]; then
-      candidate="$(tr -d '\r\n ' < "$candidate_file")"
-      if [ -n "$candidate" ] && valid_version "$candidate"; then
-        printf '%s' "$candidate"
-        return 0
-      fi
-    fi
-  done
-
-  candidate="$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 30 "${XIAOYA_DATA_URL}/version.txt" 2>/dev/null | tr -d '\r\n ' || true)"
-  if [ -n "$candidate" ] && valid_version "$candidate"; then
-    printf '%s' "$candidate"
-    return 0
-  fi
-  return 1
-}
-
 sql_scalar() {
   query="$1"
   sqlite3 "$DB_PATH" "$query" 2>/dev/null | tr -d '\r\n '
 }
+
+cleanup() {
+  rm -f "$VERSION_TMP" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
 
 log "normalize start strict=${STRICT_MODE} db=${DB_PATH}"
 
@@ -76,7 +62,6 @@ for required_table in x_storages x_users; do
 done
 log "数据库基础表检查通过"
 
-# 如更新流程留下 admin 备份，先恢复。
 admin_backup_exists="$(sql_scalar "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='byoa_admin_backup';" || true)"
 if [ "$admin_backup_exists" = "1" ]; then
   log "检测到 admin 备份，开始恢复"
@@ -139,9 +124,41 @@ then
 fi
 log "BYOA 存储驱动归一化 SQL 已完成"
 
-version="$(resolve_version || true)"
+# 版本解析故意不用“函数 + command substitution”。
+# 先检查镜像/数据目录现成版本文件，再显式下载官方 version.txt。
+log "开始解析 Xiaoya 数据版本"
+version=""
+version_source=""
+for candidate_file in /version.txt /www/data/version.txt /data/version.txt; do
+  if [ -s "$candidate_file" ]; then
+    candidate="$(tr -d '\r\n ' < "$candidate_file" 2>/dev/null || true)"
+    if [ -n "$candidate" ] && valid_version "$candidate"; then
+      version="$candidate"
+      version_source="$candidate_file"
+      break
+    fi
+  fi
+done
+
+if [ -z "$version" ]; then
+  rm -f "$VERSION_TMP"
+  if curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 \
+      "${XIAOYA_DATA_URL}/version.txt" -o "$VERSION_TMP"; then
+    candidate="$(tr -d '\r\n ' < "$VERSION_TMP" 2>/dev/null || true)"
+    if [ -n "$candidate" ] && valid_version "$candidate"; then
+      version="$candidate"
+      version_source="${XIAOYA_DATA_URL}/version.txt"
+    else
+      warn "官方 version.txt 内容无效：${candidate:-empty}"
+    fi
+  else
+    warn "下载官方 version.txt 失败"
+  fi
+fi
+
+log "版本解析完成：value=${version:-empty} source=${version_source:-none}"
+
 if [ -n "$version" ] && valid_version "$version"; then
-  log "解析到 Xiaoya 数据版本：${version}"
   if sqlite3 "$DB_PATH" <<SQL
 CREATE TABLE IF NOT EXISTS byoa_state (
   key TEXT PRIMARY KEY,
