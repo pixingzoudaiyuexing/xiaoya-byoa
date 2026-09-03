@@ -17,6 +17,7 @@ RUN addgroup -g ${GID} ${USER} && \
 RUN apk add --no-cache tzdata
 
 COPY --chmod=755 --chown=${UID}:${GID} /build/${TARGETPLATFORM}/alist ./
+COPY --chmod=755 --chown=${UID}:${GID} scripts/byoa-xiaoya-bootstrap.sh /byoa-xiaoya-bootstrap.sh
 COPY --chmod=755 --chown=${UID}:${GID} entrypoint.sh /entrypoint.sh
 
 RUN /entrypoint.sh version
