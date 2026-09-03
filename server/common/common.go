@@ -25,6 +25,10 @@ func hidePrivacy(msg string) string {
 // ErrorResp is used to return error response
 // @param l: if true, log error
 func ErrorResp(c *gin.Context, err error, code int, l ...bool) {
+	// BYOA 缺授权不是普通 500 错误，统一转换成前端可识别的结构化 401 响应。
+	if TryBYOAAuthResp(c, err) {
+		return
+	}
 	ErrorWithDataResp(c, err, code, nil, l...)
 	//if len(l) > 0 && l[0] {
 	//	if flags.Debug || flags.Dev {
