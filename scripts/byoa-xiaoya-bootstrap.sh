@@ -91,7 +91,10 @@ case "$UPDATE_MODE" in
       if [ -z "$REMOTE_VERSION" ]; then
         warn "无法检查 Xiaoya 远端版本，继续使用本地内容"
       else
-        LOCAL_VERSION="$(tr -d '\r\n ' < "$VERSION_FILE" 2>/dev/null || true)"
+        LOCAL_VERSION=""
+        if [ -s "$VERSION_FILE" ]; then
+          LOCAL_VERSION="$(tr -d '\r\n ' < "$VERSION_FILE")"
+        fi
         if [ -z "$LOCAL_VERSION" ] || [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
           log "发现 Xiaoya 数据版本变化：${LOCAL_VERSION:-unknown} -> ${REMOTE_VERSION}"
           need_update=true
@@ -110,7 +113,10 @@ case "$UPDATE_MODE" in
       REMOTE_VERSION="$(fetch_remote_version || true)"
     else
       REMOTE_VERSION="$(fetch_remote_version || true)"
-      LOCAL_VERSION="$(tr -d '\r\n ' < "$VERSION_FILE" 2>/dev/null || true)"
+      LOCAL_VERSION=""
+      if [ -s "$VERSION_FILE" ]; then
+        LOCAL_VERSION="$(tr -d '\r\n ' < "$VERSION_FILE")"
+      fi
       if [ -n "$REMOTE_VERSION" ] && [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
         need_update=true
       fi
@@ -120,38 +126,44 @@ esac
 
 if [ "$need_update" = true ]; then
   log "准备无私人 Token 的 Xiaoya 数据初始化/更新"
+  update_ready=true
 
   # QuarkShare 不需要服务器 Cookie 浏览公开分享；只需要官方公开分享清单生成挂载。
+  # 已有库更新时若这个清单暂时下载失败，宁可继续保留旧库，也不要运行 updateall 后丢失 QuarkShare。
   if ! curl -fsSL --retry 3 "${XIAOYA_DATA_URL}/quarkshare_list.txt" -o /data/quarkshare_list.txt; then
     warn "下载 quarkshare_list.txt 失败"
     if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
       exit 1
     fi
+    warn "跳过本次 Xiaoya 内容更新，继续使用现有数据库"
+    update_ready=false
   fi
 
-  # Xiaoya /updateall 会改写 admin 的兼容 password 字段。已有库更新时先完整备份 admin 行，
-  # 更新后恢复，确保内容更新不改变本地管理账号。
-  if [ -s "$DB_PATH" ]; then
-    if ! backup_admin; then
-      if [ "$STRICT_MODE" = true ]; then
-        exit 1
+  if [ "$update_ready" = true ]; then
+    # Xiaoya /updateall 会改写 admin 的兼容 password 字段。已有库更新时先完整备份 admin 行，
+    # 更新后恢复，确保内容更新不改变本地管理账号。
+    if [ -s "$DB_PATH" ]; then
+      if ! backup_admin; then
+        if [ "$STRICT_MODE" = true ]; then
+          exit 1
+        fi
       fi
     fi
-  fi
 
-  if [ ! -x /updateall ]; then
-    warn "基础镜像缺少 /updateall"
-    restore_admin || true
-    if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
-      exit 1
-    fi
-  elif /updateall; then
-    UPDATE_SUCCEEDED=true
-  else
-    warn "Xiaoya /updateall 执行失败"
-    restore_admin || true
-    if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
-      exit 1
+    if [ ! -x /updateall ]; then
+      warn "基础镜像缺少 /updateall"
+      restore_admin || true
+      if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
+        exit 1
+      fi
+    elif /updateall; then
+      UPDATE_SUCCEEDED=true
+    else
+      warn "Xiaoya /updateall 执行失败"
+      restore_admin || true
+      if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
+        exit 1
+      fi
     fi
   fi
 fi
@@ -217,12 +229,22 @@ if [ "$STRICT_MODE" = true ]; then
 fi
 
 # 只在 updateall 成功且 BYOA 归一化通过后记录实际数据版本。
-# 优先使用 updateall 实际下载的版本，避免镜像源落后时误写远端版本。
-if [ "$UPDATE_SUCCEEDED" = true ]; then
-  ACTUAL_VERSION="$(tr -d '\r\n ' < /www/data/version.txt 2>/dev/null || true)"
+# Xiaoya 当前 updateall 会把版本写到 /version.txt；同时兼容 /www/data/version.txt。
+if [ "$need_update" = true ] && [ "$UPDATE_SUCCEEDED" = true ]; then
+  ACTUAL_VERSION=""
+  if [ -s /version.txt ]; then
+    ACTUAL_VERSION="$(tr -d '\r\n ' < /version.txt)"
+  fi
+  if { [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; } && [ -s /www/data/version.txt ]; then
+    ACTUAL_VERSION="$(tr -d '\r\n ' < /www/data/version.txt)"
+  fi
   if [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; then
     ACTUAL_VERSION="$REMOTE_VERSION"
   fi
+  if [ -z "$ACTUAL_VERSION" ] || ! valid_version "$ACTUAL_VERSION"; then
+    ACTUAL_VERSION="$(fetch_remote_version || true)"
+  fi
+
   if [ -n "$ACTUAL_VERSION" ] && valid_version "$ACTUAL_VERSION"; then
     printf '%s\n' "$ACTUAL_VERSION" > "$VERSION_FILE"
     log "已记录 Xiaoya 数据版本：${ACTUAL_VERSION}"
