@@ -1,0 +1,30 @@
+FROM alpine:edge AS builder
+WORKDIR /app/
+RUN apk add --no-cache bash curl jq gcc git go musl-dev
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . ./
+RUN bash build.sh release docker
+
+# 保留 Xiaoya 官方运行时，因为 /updateall、公开数据目录和兼容脚本都来自该镜像。
+# 只覆盖 PowerList/OpenList 二进制，并加入 BYOA bootstrap/entrypoint。
+FROM xiaoyaliu/alist:latest
+LABEL org.opencontainers.image.title="Xiaoya BYOA"
+LABEL org.opencontainers.image.description="Tokenless Xiaoya catalog with browser-owned Aliyun and Quark playback credentials"
+
+WORKDIR /opt/alist/
+
+COPY --from=builder --chmod=755 /app/bin/openlist ./alist
+COPY --chmod=755 scripts/byoa-xiaoya-bootstrap.sh /byoa-xiaoya-bootstrap.sh
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
+
+ENV UMASK=022 \
+    RUN_ARIA2=false \
+    BYOA_XIAOYA_BOOTSTRAP=true \
+    BYOA_XIAOYA_UPDATE=if-newer \
+    BYOA_XIAOYA_STRICT=false
+
+VOLUME ["/opt/alist/data"]
+EXPOSE 5244
+
+ENTRYPOINT ["/entrypoint.sh"]
