@@ -34,7 +34,7 @@ jobs:
           go test ./internal/byoa -count=1
           go test ./server/common -run 'BYOA' -count=1
           go test ./server/static -run '^TestBYOA' -count=1
-          go test ./server/handles -run '^TestBYOAIPRateLimiterBurstAndRefill$' -count=1
+          go test ./server/middlewares -run '^TestBYOAIPRateLimiterBurstAndRefill$' -count=1
           go test ./drivers/quark_uc_share -run '^TestQuarkBYOARequiresBrowserCredential$' -count=1
           go test ./drivers/aliyundrive_share2_open -run '^TestAliyunBYOARequiresBrowserCredential$' -count=1
 
