@@ -92,7 +92,7 @@ func Init(e *gin.Engine) {
 	api.GET("/authn/webauthn_begin_login", handles.BeginAuthnLogin)
 	api.POST("/authn/webauthn_finish_login", handles.FinishAuthnLogin)
 	webauthn.GET("/webauthn_begin_registration", handles.BeginAuthnRegistration)
-	webauthn.POST("/webauthn_finish_registration", handles.FinishAuthnLogin)
+	webauthn.POST("/webauthn_finish_registration", handles.FinishAuthnRegistration)
 	webauthn.POST("/delete_authn", handles.DeleteAuthnLogin)
 	webauthn.GET("/getcredentials", handles.GetAuthnCredentials)
 
@@ -139,7 +139,7 @@ func admin(g *gin.RouterGroup) {
 	user.POST("/cancel_2fa", handles.Cancel2FAById)
 	user.POST("/delete", handles.DeleteUser)
 	user.POST("/del_cache", handles.DelUserCache)
-	user.GET("/sshkey/list", handles.ListPublicKey)
+	user.GET("/sshkey/list", handles.ListPublicKeys)
 	user.POST("/sshkey/delete", handles.DeletePublicKey)
 
 	storage := g.Group("/storage")
