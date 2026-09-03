@@ -84,7 +84,7 @@ jobs:
             exit 1
           fi
 
-      - name: Smoke build Xiaoya runtime image
+      - name: Smoke build and run Xiaoya runtime image
         if: matrix.target == 'linux-amd64-musl'
         run: |
           set -e
@@ -94,6 +94,42 @@ jobs:
             --build-arg TARGETPLATFORM=linux/amd64 \
             -f Dockerfile.ci \
             -t xiaoya-byoa:ci .
+
+          echo '=== Xiaoya runtime layout ==='
+          docker run --rm --entrypoint sh xiaoya-byoa:ci -c '
+            set -e
+            ls -ld /data /www/data /opt/alist/data 2>/dev/null || true
+            printf "/data -> "; readlink -f /data 2>/dev/null || true
+            printf "/opt/alist/data -> "; readlink -f /opt/alist/data 2>/dev/null || true
+          '
+
+          container_id="$(docker run -d --name xiaoya-byoa-ci -p 15244:5244 xiaoya-byoa:ci)"
+          cleanup() {
+            docker logs xiaoya-byoa-ci 2>/dev/null || true
+            docker rm -f xiaoya-byoa-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:15244/ping | grep -q 'pong'; then
+              ok=1
+              break
+            fi
+            if ! docker inspect -f '{{.State.Running}}' "$container_id" 2>/dev/null | grep -q true; then
+              echo 'Xiaoya BYOA container exited before health check passed'
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo 'Xiaoya BYOA /ping health check timed out'
+            exit 1
+          fi
+          echo 'Xiaoya BYOA runtime health check passed'
+          docker rm -f xiaoya-byoa-ci >/dev/null
+          trap - EXIT
+          rm -rf build/linux
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
