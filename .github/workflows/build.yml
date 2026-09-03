@@ -22,6 +22,12 @@ jobs:
         with:
           go-version: "1.26.4"
 
+      - name: Prepare embedded frontend stub
+        run: |
+          set -e
+          mkdir -p public/dist
+          printf '%s\n' '<!doctype html><html><body><!-- customize body --></body></html>' > public/dist/index.html
+
       - name: Test BYOA core
         run: |
           set -e
