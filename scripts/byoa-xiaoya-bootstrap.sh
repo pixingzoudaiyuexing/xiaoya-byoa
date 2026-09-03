@@ -169,8 +169,6 @@ if [ "$need_update" = true ]; then
   log "准备无私人 Token 的 Xiaoya 数据初始化/更新"
   update_ready=true
 
-  # QuarkShare 不需要服务器 Cookie 浏览公开分享；只需要官方公开分享清单生成挂载。
-  # 已有库更新时若这个清单暂时下载失败，宁可继续保留旧库，也不要运行 updateall 后丢失 QuarkShare。
   if ! curl -fsSL --retry 3 "${XIAOYA_DATA_URL}/quarkshare_list.txt" -o /data/quarkshare_list.txt; then
     warn "下载 quarkshare_list.txt 失败"
     if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
@@ -181,8 +179,6 @@ if [ "$need_update" = true ]; then
   fi
 
   if [ "$update_ready" = true ] && [ -s "$DB_PATH" ]; then
-    # Xiaoya /updateall 会改写 admin 的兼容 password 字段。已有库更新时先完整备份 admin 行。
-    # 如果备份失败，非严格模式也跳过本次更新，宁可保留旧内容，不冒险改坏本地管理账号。
     if ! backup_admin; then
       if [ "$STRICT_MODE" = true ]; then
         exit 1
@@ -199,25 +195,34 @@ if [ "$need_update" = true ]; then
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
       fi
-    elif ( /updateall ); then
-      # 某些 Xiaoya /updateall 版本在脚本末尾使用 exec/exit 风格收尾。
-      # 强制放进子 shell，避免它结束 BYOA bootstrap 本身，确保后续归一化必定继续执行。
-      committed_version="$(resolve_updated_version || true)"
-      if [ -n "$committed_version" ] && valid_version "$committed_version"; then
-        store_local_version "$committed_version"
-        log "已记录 Xiaoya 数据版本：${committed_version}"
+    else
+      log "updateall 控制流诊断开始"
+      grep -nE '(^|[^[:alnum:]_])(kill|pkill|killall|exit|exec|reboot|restart|shutdown|trap)([^[:alnum:]_]|$)' /updateall 2>/dev/null || true
+      log "updateall 末尾诊断开始"
+      tail -n 60 /updateall 2>/dev/null || true
+      set +e
+      ( /updateall )
+      update_status=$?
+      set -e
+      log "Xiaoya /updateall 返回状态：${update_status}"
+      if [ "$update_status" -eq 0 ]; then
+        committed_version="$(resolve_updated_version || true)"
+        if [ -n "$committed_version" ] && valid_version "$committed_version"; then
+          store_local_version "$committed_version"
+          log "已记录 Xiaoya 数据版本：${committed_version}"
+        else
+          warn "Xiaoya 更新成功，但未取得有效数据版本"
+          if [ "$STRICT_MODE" = true ]; then
+            restore_admin || true
+            exit 1
+          fi
+        fi
       else
-        warn "Xiaoya 更新成功，但未取得有效数据版本"
-        if [ "$STRICT_MODE" = true ]; then
-          restore_admin || true
+        warn "Xiaoya /updateall 执行失败：${update_status}"
+        restore_admin || true
+        if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
           exit 1
         fi
-      fi
-    else
-      warn "Xiaoya /updateall 执行失败"
-      restore_admin || true
-      if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
-        exit 1
       fi
     fi
   fi
@@ -228,9 +233,6 @@ if [ ! -s "$DB_PATH" ]; then
   exit 0
 fi
 
-# Xiaoya update.sql 当前仍使用旧 AliyundriveShare；PowerList 的 AliyunShare
-# 可匿名读取公开分享目录，并在 Link 阶段使用当前浏览器 BYOA Token。
-# addition 中历史账号字段对新 Driver 无意义，顺便删除，避免误把服务端凭据设计带回来。
 sqlite3 "$DB_PATH" <<'SQL'
 UPDATE x_storages
 SET driver = 'AliyunShare'
@@ -269,7 +271,6 @@ SET disabled = 0,
 WHERE id = 2;
 SQL
 
-# 已有实例更新完成后恢复 admin；首次初始化没有备份，不执行此步骤。
 restore_admin
 
 ali_count="$(sqlite3 "$DB_PATH" "select count(*) from x_storages where driver='AliyunShare';")"
