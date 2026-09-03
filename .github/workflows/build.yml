@@ -103,56 +103,63 @@ jobs:
             printf "/opt/alist/data -> "; readlink -f /opt/alist/data 2>/dev/null || true
           '
 
-          echo '=== Xiaoya tokenless data bootstrap ==='
-          docker run --rm --entrypoint sh xiaoya-byoa:ci -c '
-            set -eu
-            mkdir -p /data /www/data /opt/alist/data
-            rm -f \
-              /data/mytoken.txt \
-              /data/myopentoken.txt \
-              /data/temp_transfer_folder_id.txt \
-              /data/quark_cookie.txt
-
-            curl -fsSL --retry 3 \
-              https://raw.githubusercontent.com/xiaoyaDev/data/main/quarkshare_list.txt \
-              -o /data/quarkshare_list.txt
-            test -s /data/quarkshare_list.txt
-            test -x /updateall
-
-            /updateall
-
-            test -s /opt/alist/data/data.db
-            for secret_file in \
-              /data/mytoken.txt \
-              /data/myopentoken.txt \
-              /data/temp_transfer_folder_id.txt \
-              /data/quark_cookie.txt; do
-              if [ -s "$secret_file" ]; then
-                echo "Unexpected server credential created: $secret_file"
-                exit 1
-              fi
-            done
-
-            echo "=== Storage counts after tokenless updateall ==="
-            sqlite3 /opt/alist/data/data.db \
-              "select driver, count(*) from x_storages group by driver order by driver;"
-
-            ali_count="$(sqlite3 /opt/alist/data/data.db \
-              "select count(*) from x_storages where driver in ('AliyundriveShare','AliyundriveShare2Open','AliyundriveShare2Pan115');")"
-            quark_count="$(sqlite3 /opt/alist/data/data.db \
-              "select count(*) from x_storages where driver='QuarkShare';")"
-            echo "Aliyun share storages: $ali_count"
-            echo "Quark share storages: $quark_count"
-            test "$ali_count" -gt 0
-            test "$quark_count" -gt 0
-          '
-
-          container_id="$(docker run -d --name xiaoya-byoa-ci -p 15244:5244 xiaoya-byoa:ci)"
+          data_volume="xiaoya-byoa-ci-data"
+          docker volume create "$data_volume" >/dev/null
           cleanup() {
             docker logs xiaoya-byoa-ci 2>/dev/null || true
             docker rm -f xiaoya-byoa-ci >/dev/null 2>&1 || true
+            docker volume rm -f "$data_volume" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
+
+          echo '=== Xiaoya tokenless BYOA bootstrap ==='
+          docker run --rm \
+            -e BYOA_XIAOYA_STRICT=true \
+            -e BYOA_XIAOYA_UPDATE=if-missing \
+            -v "$data_volume:/opt/alist/data" \
+            --entrypoint /byoa-xiaoya-bootstrap.sh \
+            xiaoya-byoa:ci
+
+          echo '=== Storage counts after BYOA normalization ==='
+          docker run --rm \
+            -v "$data_volume:/opt/alist/data" \
+            --entrypoint sqlite3 \
+            xiaoya-byoa:ci \
+            /opt/alist/data/data.db \
+            "select driver, count(*) from x_storages group by driver order by driver;"
+
+          ali_count="$(docker run --rm \
+            -v "$data_volume:/opt/alist/data" \
+            --entrypoint sqlite3 \
+            xiaoya-byoa:ci \
+            /opt/alist/data/data.db \
+            "select count(*) from x_storages where driver='AliyunShare';")"
+          quark_count="$(docker run --rm \
+            -v "$data_volume:/opt/alist/data" \
+            --entrypoint sqlite3 \
+            xiaoya-byoa:ci \
+            /opt/alist/data/data.db \
+            "select count(*) from x_storages where driver='QuarkShare';")"
+          legacy_count="$(docker run --rm \
+            -v "$data_volume:/opt/alist/data" \
+            --entrypoint sqlite3 \
+            xiaoya-byoa:ci \
+            /opt/alist/data/data.db \
+            "select count(*) from x_storages where driver in ('AliyundriveShare','AliyundriveShare2Open','AliyundriveShare2Pan115','115 Share','115 Cloud','UCShare','PikPakShare','PikPak');")"
+
+          echo "AliyunShare storages: $ali_count"
+          echo "QuarkShare storages: $quark_count"
+          echo "Legacy/account-bound storages: $legacy_count"
+          test "$ali_count" -gt 0
+          test "$quark_count" -gt 0
+          test "$legacy_count" -eq 0
+
+          container_id="$(docker run -d \
+            --name xiaoya-byoa-ci \
+            -e BYOA_XIAOYA_UPDATE=if-missing \
+            -v "$data_volume:/opt/alist/data" \
+            -p 15244:5244 \
+            xiaoya-byoa:ci)"
 
           ok=0
           for _ in $(seq 1 30); do
@@ -171,8 +178,27 @@ jobs:
             exit 1
           fi
           echo 'Xiaoya BYOA runtime health check passed'
+
+          echo '=== Guest root catalog without any BYOA credential ==='
+          guest_body="$(curl -fsS \
+            -H 'Content-Type: application/json' \
+            -d '{"path":"/","password":"","page":1,"per_page":0,"refresh":false}' \
+            http://127.0.0.1:15244/api/fs/list)"
+          printf '%s\n' "$guest_body"
+          GUEST_BODY="$guest_body" python3 - <<'PY'
+          import json
+          import os
+
+          body = json.loads(os.environ["GUEST_BODY"])
+          assert body.get("code") == 200, body
+          content = (body.get("data") or {}).get("content") or []
+          assert len(content) > 0, body
+          print(f"Guest catalog entries: {len(content)}")
+          PY
+
           docker rm -f xiaoya-byoa-ci >/dev/null
           trap - EXIT
+          docker volume rm -f "$data_volume" >/dev/null
           rm -rf build/linux
 
       - name: Upload artifact
