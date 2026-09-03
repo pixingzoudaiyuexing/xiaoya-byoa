@@ -16,7 +16,7 @@ UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 REMOTE_VERSION=""
 ADMIN_BACKED_UP=false
-UPDATE_MARKER="/tmp/byoa-xiaoya-update.$$"
+UPDATE_MARKER="${DATA_DIR}/.byoa_xiaoya_update"
 rm -f "$UPDATE_MARKER"
 
 log() {
@@ -203,8 +203,8 @@ if [ "$need_update" = true ]; then
         exit 1
       fi
     else
-      # 先落一个进程级一次性标记。/updateall 成功返回后它自然保留；
-      # 失败路径明确删除。最终只有在数据库归一化也成功后才据此提交版本状态。
+      # 标记放在持久化数据目录，而不是 /tmp；Xiaoya /updateall 会清理临时目录。
+      # /updateall 成功时标记自然保留；失败路径明确删除。
       : > "$UPDATE_MARKER"
       if ! /updateall; then
         warn "Xiaoya /updateall 执行失败"
