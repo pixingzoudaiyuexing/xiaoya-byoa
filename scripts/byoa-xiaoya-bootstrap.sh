@@ -16,8 +16,9 @@ XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoy
 UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 REMOTE_VERSION=""
-UPDATE_SUCCEEDED=false
 ADMIN_BACKED_UP=false
+UPDATE_MARKER="/tmp/byoa-xiaoya-update.$$"
+rm -f "$UPDATE_MARKER"
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -157,7 +158,8 @@ if [ "$need_update" = true ]; then
         exit 1
       fi
     elif /updateall; then
-      UPDATE_SUCCEEDED=true
+      # 使用文件标记记录真实成功，避免不同 /bin/sh 对条件分支变量状态的差异影响版本持久化。
+      : > "$UPDATE_MARKER"
     else
       warn "Xiaoya /updateall 执行失败"
       restore_admin || true
@@ -170,6 +172,7 @@ fi
 
 if [ ! -s "$DB_PATH" ]; then
   warn "尚未生成 Xiaoya data.db，继续启动 PowerList 空库"
+  rm -f "$UPDATE_MARKER"
   exit 0
 fi
 
@@ -228,9 +231,9 @@ if [ "$STRICT_MODE" = true ]; then
   [ "$quark_count" -gt 0 ]
 fi
 
-# 只在 updateall 成功且 BYOA 归一化通过后记录实际数据版本。
+# 只在 updateall 真正成功且 BYOA 归一化通过后记录实际数据版本。
 # Xiaoya 当前 updateall 会把版本写到 /version.txt；同时兼容 /www/data/version.txt。
-if [ "$need_update" = true ] && [ "$UPDATE_SUCCEEDED" = true ]; then
+if [ "$need_update" = true ] && [ -f "$UPDATE_MARKER" ]; then
   ACTUAL_VERSION=""
   if [ -s /version.txt ]; then
     ACTUAL_VERSION="$(tr -d '\r\n ' < /version.txt)"
@@ -252,3 +255,5 @@ if [ "$need_update" = true ] && [ "$UPDATE_SUCCEEDED" = true ]; then
     warn "更新成功但未取得有效 Xiaoya 数据版本；下次启动会重新检查"
   fi
 fi
+
+rm -f "$UPDATE_MARKER"
