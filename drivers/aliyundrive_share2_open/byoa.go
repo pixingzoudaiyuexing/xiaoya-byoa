@@ -9,7 +9,6 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
-	"github.com/go-resty/resty/v2"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -30,10 +29,10 @@ func (d *AliyundriveShare2Open) byoaDirectLink(ctx context.Context, file model.O
 
 	requestLink := func() (*ShareLinkResp, *ErrorResp, error) {
 		data := base.Json{
-			"drive_id":  driveID,
-			"file_id":   file.GetID(),
+			"drive_id":   driveID,
+			"file_id":    file.GetID(),
 			"expire_sec": 600,
-			"share_id":  d.ShareId,
+			"share_id":   d.ShareId,
 		}
 		var resp ShareLinkResp
 		var apiErr ErrorResp
