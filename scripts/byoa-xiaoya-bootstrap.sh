@@ -199,10 +199,9 @@ if [ "$need_update" = true ]; then
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
       fi
-    elif /updateall; then
-      # /updateall 会重建自身管理的运行目录，因此不要依赖临时 marker。
-      # 它成功返回后立即把本次内容版本写入持久化 data.db；byoa_state 不属于
-      # Xiaoya update.sql 会 DROP 的表，后续容器重建仍可可靠读取。
+    elif ( /updateall ); then
+      # 某些 Xiaoya /updateall 版本在脚本末尾使用 exec/exit 风格收尾。
+      # 强制放进子 shell，避免它结束 BYOA bootstrap 本身，确保后续归一化必定继续执行。
       committed_version="$(resolve_updated_version || true)"
       if [ -n "$committed_version" ] && valid_version "$committed_version"; then
         store_local_version "$committed_version"
