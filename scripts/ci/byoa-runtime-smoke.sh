@@ -92,7 +92,7 @@ admin_hash() {
 }
 
 data_version() {
-  docker exec "$CONTAINER" sh -c 'tr -d "\r\n " < /opt/alist/data/xiaoya_data.version'
+  sql "select value from byoa_state where key='xiaoya_data_version' limit 1;"
 }
 
 assert_guest_catalog() {
@@ -319,7 +319,7 @@ test "$second_version" = "$first_version"
 assert_guest_catalog
 
 echo '=== Force an old content version and verify safe refresh ==='
-docker exec "$CONTAINER" sh -c "printf '%s\n' '0.0.0' > /opt/alist/data/xiaoya_data.version"
+sql "create table if not exists byoa_state (key text primary key, value text not null); insert or replace into byoa_state (key,value) values ('xiaoya_data_version','0.0.0');"
 docker rm -f "$CONTAINER" >/dev/null
 start_container if-newer
 refresh_snapshot="$(storage_snapshot)"
