@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 )
@@ -16,6 +17,8 @@ var (
 	aliyunQRQueryEndpoint    = "https://passport.aliyundrive.com/newlogin/qrcode/query.do"
 	aliyunRefreshEndpoint    = "https://auth.alipan.com/v2/account/token"
 )
+
+const byoaUpstreamTimeout = 15 * time.Second
 
 type AliyunQRStart struct {
 	CK      string `json:"ck"`
@@ -61,11 +64,15 @@ type aliyunRefreshResp struct {
 	Message      string `json:"message"`
 }
 
+func newBYOAHTTPClient() *resty.Client {
+	return resty.New().SetTimeout(byoaUpstreamTimeout)
+}
+
 // StartAliyunQR 创建阿里云盘普通账号扫码二维码。
 // ck/t 直接交由浏览器持有，服务端不维护扫码 Session。
 func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	var result aliyunGenerateResp
-	resp, err := resty.New().R().
+	resp, err := newBYOAHTTPClient().R().
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
 			"appName":     "aliyun_drive",
@@ -112,7 +119,7 @@ func CheckAliyunQR(ctx context.Context, ck, t string) (status *AliyunQRStatus, a
 	}
 
 	var result aliyunQueryResp
-	resp, err := resty.New().R().
+	resp, err := newBYOAHTTPClient().R().
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
 			"appName":  "aliyun_drive",
@@ -191,7 +198,7 @@ func aliyunRefreshTokenFromBizExt(encoded string) (string, error) {
 
 func exchangeAliyunRefreshToken(ctx context.Context, refreshToken string) (string, error) {
 	var result aliyunRefreshResp
-	resp, err := resty.New().R().
+	resp, err := newBYOAHTTPClient().R().
 		SetContext(ctx).
 		SetBody(map[string]string{
 			"refresh_token": refreshToken,
