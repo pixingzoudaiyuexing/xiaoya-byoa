@@ -61,7 +61,7 @@ type quarkQRStatusResp struct {
 // token 直接交给浏览器保存并用于后续轮询，服务端不维护扫码状态表。
 func StartQuarkQR(ctx context.Context) (*QuarkQRStart, error) {
 	var result quarkQRTokenResp
-	resp, err := resty.New().R().
+	resp, err := newBYOAHTTPClient().R().
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
 			"client_id":  quarkClientID,
@@ -103,7 +103,7 @@ func CheckQuarkQR(ctx context.Context, token string) (status *QuarkQRStatus, cre
 	}
 
 	var result quarkQRStatusResp
-	resp, err := resty.New().R().
+	resp, err := newBYOAHTTPClient().R().
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
 			"client_id":  quarkClientID,
@@ -141,7 +141,7 @@ func CheckQuarkQR(ctx context.Context, token string) (status *QuarkQRStatus, cre
 }
 
 func exchangeQuarkServiceTicket(ctx context.Context, serviceTicket string) (string, error) {
-	client := resty.New()
+	client := newBYOAHTTPClient()
 	accountResp, err := client.R().
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
