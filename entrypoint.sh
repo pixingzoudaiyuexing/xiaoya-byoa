@@ -27,11 +27,24 @@ else
   fi
 
   # BYOA Xiaoya 首次启动：使用官方公开数据生成丰富目录，不要求服务器私人 Token。
-  # bootstrap 内部会自行降级处理“已有数据库 + 远端暂时不可用”等可恢复场景；
-  # 如果它最终仍返回失败，说明当前数据库没有完成安全归一化，不能继续启动服务。
+  # Xiaoya /updateall 是自解压运行器，部分版本在完成数据库更新后可能以异常控制流退出。
+  # 因此这里只要求“最终 data.db 已生成”；真正的 BYOA 安全归一化由独立脚本负责。
   if [ "${BYOA_XIAOYA_BOOTSTRAP:-true}" = "true" ] && [ -x /byoa-xiaoya-bootstrap.sh ]; then
     if ! /byoa-xiaoya-bootstrap.sh; then
-      echo "Error: BYOA Xiaoya bootstrap failed" >&2
+      if [ -s /opt/alist/data/data.db ]; then
+        echo "[BYOA Xiaoya] WARN: bootstrap 返回失败，但 data.db 已生成，继续执行独立归一化" >&2
+      else
+        echo "Error: BYOA Xiaoya bootstrap failed before data.db was generated" >&2
+        exit 1
+      fi
+    fi
+  fi
+
+  # 无论 bootstrap 是否正常返回，都单独执行幂等归一化：
+  # 阿里驱动转换、夸克保留、旧账号型驱动清理、admin 恢复、版本标记均在这里完成。
+  if [ -x /byoa-xiaoya-normalize.sh ]; then
+    if ! /byoa-xiaoya-normalize.sh; then
+      echo "Error: BYOA Xiaoya normalization failed" >&2
       exit 1
     fi
   fi
