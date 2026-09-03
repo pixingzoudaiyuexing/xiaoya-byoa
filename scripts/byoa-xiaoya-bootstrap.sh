@@ -1,12 +1,12 @@
 #!/bin/sh
 
-# Xiaoya BYOA 数据初始化 / 更新：
+# Xiaoya BYOA 数据获取 / 更新：
 # - 只使用 Xiaoya 官方公开数据；
 # - 不要求服务器保存阿里/夸克私人凭据；
 # - 首次启动生成 Xiaoya 丰富目录；
-# - 后续启动只在 Xiaoya 数据版本变化时更新，远端不可用则继续使用本地库；
-# - 将旧 AliyundriveShare 统一切到支持 BYOA 的 AliyunShare；
-# - 当前 MVP 仅保留阿里 + 夸克，清理依赖服务端账号的 115/UC/PikPak 存储。
+# - 后续仅在数据版本变化时调用 Xiaoya /updateall；
+# - 本脚本只负责“取得/更新 data.db”，不再承担驱动转换、版本落库、账号恢复；
+# - 所有 BYOA 安全归一化统一交给 /byoa-xiaoya-normalize.sh。
 set -eu
 
 DATA_DIR="${BYOA_DATA_DIR:-/opt/alist/data}"
@@ -15,7 +15,6 @@ XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoy
 UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 REMOTE_VERSION=""
-ADMIN_BACKED_UP=false
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -48,45 +47,6 @@ read_local_version() {
   return 1
 }
 
-resolve_updated_version() {
-  candidate_version="$REMOTE_VERSION"
-
-  if [ -z "$candidate_version" ] || ! valid_version "$candidate_version"; then
-    for candidate_file in /version.txt /www/data/version.txt /data/version.txt; do
-      if [ -s "$candidate_file" ]; then
-        file_version="$(tr -d '\r\n ' < "$candidate_file")"
-        if [ -n "$file_version" ] && valid_version "$file_version"; then
-          candidate_version="$file_version"
-          break
-        fi
-      fi
-    done
-  fi
-
-  if [ -z "$candidate_version" ] || ! valid_version "$candidate_version"; then
-    candidate_version="$(fetch_remote_version || true)"
-  fi
-
-  if [ -n "$candidate_version" ] && valid_version "$candidate_version"; then
-    printf '%s' "$candidate_version"
-    return 0
-  fi
-  return 1
-}
-
-store_local_version() {
-  version="$1"
-  valid_version "$version" || return 1
-  sqlite3 "$DB_PATH" <<SQL
-CREATE TABLE IF NOT EXISTS byoa_state (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-INSERT OR REPLACE INTO byoa_state (key, value)
-VALUES ('xiaoya_data_version', '$version');
-SQL
-}
-
 backup_admin() {
   [ -s "$DB_PATH" ] || return 0
   if ! sqlite3 "$DB_PATH" <<'SQL'
@@ -98,21 +58,7 @@ SQL
     warn "备份本地 admin 账号失败"
     return 1
   fi
-  ADMIN_BACKED_UP=true
-}
-
-restore_admin() {
-  [ "$ADMIN_BACKED_UP" = true ] || return 0
-  if ! sqlite3 "$DB_PATH" <<'SQL'
-DELETE FROM x_users WHERE id = 1;
-INSERT INTO x_users SELECT * FROM byoa_admin_backup;
-DROP TABLE byoa_admin_backup;
-SQL
-  then
-    warn "恢复本地 admin 账号失败"
-    return 1
-  fi
-  ADMIN_BACKED_UP=false
+  log "已备份本地 admin，待归一化阶段恢复"
 }
 
 mkdir -p "$DATA_DIR" /data /www/data
@@ -169,6 +115,7 @@ if [ "$need_update" = true ]; then
   log "准备无私人 Token 的 Xiaoya 数据初始化/更新"
   update_ready=true
 
+  # Xiaoya 的 QuarkShare 生成依赖公开分享清单。这里只预置公开清单，绝不注入服务端 Cookie。
   if ! curl -fsSL --retry 3 "${XIAOYA_DATA_URL}/quarkshare_list.txt" -o /data/quarkshare_list.txt; then
     warn "下载 quarkshare_list.txt 失败"
     if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
@@ -178,6 +125,7 @@ if [ "$need_update" = true ]; then
     update_ready=false
   fi
 
+  # 已有实例更新前只负责备份 admin；恢复由 normalize 脚本统一完成。
   if [ "$update_ready" = true ] && [ -s "$DB_PATH" ]; then
     if ! backup_admin; then
       if [ "$STRICT_MODE" = true ]; then
@@ -191,35 +139,20 @@ if [ "$need_update" = true ]; then
   if [ "$update_ready" = true ]; then
     if [ ! -x /updateall ]; then
       warn "基础镜像缺少 /updateall"
-      restore_admin || true
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
       fi
     else
-      log "updateall 控制流诊断开始"
-      grep -nE '(^|[^[:alnum:]_])(kill|pkill|killall|exit|exec|reboot|restart|shutdown|trap)([^[:alnum:]_]|$)' /updateall 2>/dev/null || true
-      log "updateall 末尾诊断开始"
-      tail -n 60 /updateall 2>/dev/null || true
+      # /updateall 是 Xiaoya 自解压运行器。这里只把它当成独立的数据生成器：
+      # 它返回后不再做任何版本解析或数据库转换，避免其 shell/trap 行为影响后续逻辑。
       set +e
       ( /updateall )
       update_status=$?
       set -e
       log "Xiaoya /updateall 返回状态：${update_status}"
-      if [ "$update_status" -eq 0 ]; then
-        committed_version="$(resolve_updated_version || true)"
-        if [ -n "$committed_version" ] && valid_version "$committed_version"; then
-          store_local_version "$committed_version"
-          log "已记录 Xiaoya 数据版本：${committed_version}"
-        else
-          warn "Xiaoya 更新成功，但未取得有效数据版本"
-          if [ "$STRICT_MODE" = true ]; then
-            restore_admin || true
-            exit 1
-          fi
-        fi
-      else
+
+      if [ "$update_status" -ne 0 ]; then
         warn "Xiaoya /updateall 执行失败：${update_status}"
-        restore_admin || true
         if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
           exit 1
         fi
@@ -229,57 +162,12 @@ if [ "$need_update" = true ]; then
 fi
 
 if [ ! -s "$DB_PATH" ]; then
-  warn "尚未生成 Xiaoya data.db，继续启动 PowerList 空库"
+  warn "尚未生成 Xiaoya data.db"
+  if [ "$STRICT_MODE" = true ]; then
+    exit 1
+  fi
   exit 0
 fi
 
-sqlite3 "$DB_PATH" <<'SQL'
-UPDATE x_storages
-SET driver = 'AliyunShare'
-WHERE driver IN ('AliyundriveShare', 'AliyundriveShare2Open', 'AliyundriveShare2Pan115');
-
-UPDATE x_storages
-SET addition = json_remove(
-  addition,
-  '$.refresh_token',
-  '$.RefreshToken',
-  '$.RefreshTokenOpen',
-  '$.TempTransferFolderID',
-  '$.oauth_token_url',
-  '$.client_id',
-  '$.client_secret'
-)
-WHERE driver = 'AliyunShare';
-
-UPDATE x_storages
-SET addition = json_remove(addition, '$.cookie')
-WHERE driver = 'QuarkShare';
-
-DELETE FROM x_storages
-WHERE driver IN (
-  'AliyundriveCron',
-  '115 Share',
-  '115 Cloud',
-  'UCShare',
-  'PikPakShare',
-  'PikPak'
-);
-
-UPDATE x_users
-SET disabled = 0,
-    permission = 368
-WHERE id = 2;
-SQL
-
-restore_admin
-
-ali_count="$(sqlite3 "$DB_PATH" "select count(*) from x_storages where driver='AliyunShare';")"
-quark_count="$(sqlite3 "$DB_PATH" "select count(*) from x_storages where driver='QuarkShare';")"
-alias_count="$(sqlite3 "$DB_PATH" "select count(*) from x_storages where driver='Alias';")"
-
-log "目录初始化完成：AliyunShare=${ali_count} QuarkShare=${quark_count} Alias=${alias_count}"
-
-if [ "$STRICT_MODE" = true ]; then
-  [ "$ali_count" -gt 0 ]
-  [ "$quark_count" -gt 0 ]
-fi
+log "Xiaoya data.db 已就绪，交给独立 BYOA 归一化阶段"
+exit 0
