@@ -43,6 +43,7 @@ jobs:
           set -e
           sh -n entrypoint.sh
           sh -n scripts/byoa-xiaoya-bootstrap.sh
+          sh -n scripts/byoa-xiaoya-normalize.sh
           docker compose -f docker-compose.byoa.yml config >/dev/null
 
   build:
