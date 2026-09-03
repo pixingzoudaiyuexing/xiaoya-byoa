@@ -1,6 +1,7 @@
 package byoa
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strings"
@@ -120,12 +121,19 @@ func TestEncryptedCredentialRejectsTampering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeCredential() error = %v", err)
 	}
-	last := encoded[len(encoded)-1]
-	replacement := byte('A')
-	if last == replacement {
-		replacement = 'B'
+
+	// 修改实际密文/认证标签字节，而不是只替换 base64url 最后一个字符。
+	// Raw base64 的末字符可能包含未使用的低位，改变字符后仍可能解码成完全相同的字节，
+	// 那不是密文被篡改，会造成概率性假失败。
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(encoded, credentialEncodingV1))
+	if err != nil {
+		t.Fatalf("DecodeString() error = %v", err)
 	}
-	tampered := encoded[:len(encoded)-1] + string(replacement)
+	if len(payload) == 0 {
+		t.Fatal("encrypted payload is empty")
+	}
+	payload[len(payload)-1] ^= 0x01
+	tampered := credentialEncodingV1 + base64.RawURLEncoding.EncodeToString(payload)
 
 	if _, err := DecodeCredential(ProviderAliyun, tampered); err == nil {
 		t.Fatal("DecodeCredential() expected tamper error")
