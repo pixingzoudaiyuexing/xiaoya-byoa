@@ -100,5 +100,16 @@ else
   fi
 fi
 
-echo "[BYOA entrypoint] exec server"
-exec ./alist server --no-prefix
+# 诊断阶段：强制把 OpenList 日志同时输出到 stdout，并捕获退出码。
+# 确认启动根因后恢复 exec 让 OpenList 成为容器 PID 1。
+echo "[BYOA entrypoint] server begin (diagnostic log-std)"
+./alist server --no-prefix --log-std
+server_status=$?
+echo "[BYOA entrypoint] server exited rc=${server_status}" >&2
+
+if [ -f /opt/alist/data/log/log.log ]; then
+  echo "[BYOA entrypoint] tail OpenList log file" >&2
+  tail -n 80 /opt/alist/data/log/log.log >&2 || true
+fi
+
+exit "$server_status"
