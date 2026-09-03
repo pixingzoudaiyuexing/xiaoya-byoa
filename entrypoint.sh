@@ -5,6 +5,11 @@ umask ${UMASK}
 if [ "$1" = "version" ]; then
   ./alist version
 else
+  # BYOA Xiaoya 首次启动：使用官方公开数据生成丰富目录，不要求服务器私人 Token。
+  if [ "${BYOA_XIAOYA_BOOTSTRAP:-true}" = "true" ] && [ -x /byoa-xiaoya-bootstrap.sh ]; then
+    /byoa-xiaoya-bootstrap.sh
+  fi
+
   # Check file of /opt/openlist/data permissions for current user
   # 检查当前用户是否有当前目录的写和执行权限
   if [ -d ./data ]; then
