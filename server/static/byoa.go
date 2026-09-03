@@ -9,6 +9,7 @@ import "strings"
 // 设计原则：
 // - 不读取网盘凭据；凭据由后端写入 HttpOnly Cookie。
 // - 不引入用户系统、Redis 或服务端 Session。
+// - 同时兼容 XHR 与 fetch，避免前端升级后扫码入口失效。
 // - 只注入访客页面，不注入管理后台。
 const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
 (function () {
@@ -161,14 +162,20 @@ const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
     });
   }
 
-  function inspectResponse(xhr) {
+  function inspectAuthBody(rawURL, body) {
     try {
-      if (!xhr.__xyByoaURL || xhr.__xyByoaURL.indexOf("/api/fs/get") < 0) return;
-      var body = JSON.parse(xhr.responseText || "{}");
+      if (!rawURL || rawURL.indexOf("/api/fs/get") < 0) return;
       var data = body && body.data;
       if (!data || data.byoa_auth_required !== true || !data.provider) return;
       if (data.provider !== "aliyun" && data.provider !== "quark") return;
-      beginScan(data.provider, apiRootFromURL(xhr.__xyByoaURL));
+      if (active && active.provider === data.provider) return;
+      beginScan(data.provider, apiRootFromURL(rawURL));
+    } catch (_) {}
+  }
+
+  function inspectXHR(xhr) {
+    try {
+      inspectAuthBody(xhr.__xyByoaURL, JSON.parse(xhr.responseText || "{}"));
     } catch (_) {}
   }
 
@@ -179,9 +186,29 @@ const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
     return originalOpen.apply(this, arguments);
   };
   XMLHttpRequest.prototype.send = function () {
-    this.addEventListener("loadend", function () { inspectResponse(this); });
+    this.addEventListener("loadend", function () { inspectXHR(this); });
     return originalSend.apply(this, arguments);
   };
+
+  if (typeof window.fetch === "function") {
+    var originalFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      var rawURL = "";
+      try {
+        rawURL = typeof input === "string" ? input : (input && input.url) ? input.url : String(input || "");
+      } catch (_) {}
+      return originalFetch(input, init).then(function (response) {
+        if (rawURL.indexOf("/api/fs/get") >= 0) {
+          try {
+            response.clone().json().then(function (body) {
+              inspectAuthBody(rawURL, body);
+            }).catch(function () {});
+          } catch (_) {}
+        }
+        return response;
+      });
+    };
+  }
 })();
 </script>`
 
