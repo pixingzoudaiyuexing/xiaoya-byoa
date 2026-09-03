@@ -103,6 +103,8 @@ func Init(e *gin.Engine) {
 	public.Any("/archive_extensions", handles.ArchiveExtensions)
 	public.GET("/byoa/quark/start", handles.BYOAQuarkStart)
 	public.GET("/byoa/quark/status", handles.BYOAQuarkStatus)
+	public.GET("/byoa/aliyun/start", handles.BYOAAliyunStart)
+	public.GET("/byoa/aliyun/status", handles.BYOAAliyunStatus)
 	public.POST("/byoa/clear", handles.BYOAClear)
 
 	_fs(auth.Group("/fs"))
