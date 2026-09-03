@@ -101,6 +101,9 @@ func Init(e *gin.Engine) {
 	public.Any("/settings", handles.PublicSettings)
 	public.Any("/offline_download_tools", handles.OfflineDownloadTools)
 	public.Any("/archive_extensions", handles.ArchiveExtensions)
+	public.GET("/byoa/quark/start", handles.BYOAQuarkStart)
+	public.GET("/byoa/quark/status", handles.BYOAQuarkStatus)
+	public.POST("/byoa/clear", handles.BYOAClear)
 
 	_fs(auth.Group("/fs"))
 	_index115(auth.Group("/index115"))
