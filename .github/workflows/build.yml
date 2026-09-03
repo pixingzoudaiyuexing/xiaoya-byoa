@@ -10,7 +10,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  byoa-test:
+    name: Test BYOA MVP
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26.4"
+
+      - name: Test BYOA core
+        run: |
+          set -e
+          go test ./internal/byoa -count=1
+          go test ./server/common -run '^TestErrorRespConvertsBYOAAuthError$' -count=1
+          go test ./drivers/quark_uc_share -run '^TestQuarkBYOARequiresBrowserCredential$' -count=1
+          go test ./drivers/aliyundrive_share2_open -run '^TestAliyunBYOARequiresBrowserCredential$' -count=1
+
   build:
+    needs: byoa-test
     strategy:
       matrix:
         target:
