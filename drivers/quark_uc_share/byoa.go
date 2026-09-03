@@ -11,7 +11,6 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
-	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/go-resty/resty/v2"
 	log "github.com/sirupsen/logrus"
@@ -30,8 +29,13 @@ func (d *QuarkUCShare) byoaDirectLink(ctx context.Context, file model.Obj, crede
 		parentID = parts[2]
 	}
 
-	if d.ShareToken == "" {
-		if err := d.byoaRefreshShareToken(ctx, credential); err != nil {
+	// Storage 中的 stoken 可作为公开目录已有值使用；如果需要刷新，新的 stoken 只保留在本请求局部变量。
+	// BYOA 绝不把由某个访客 Cookie 换出的 token 写回 Driver/Storage，避免 A 请求改变 B 的全局状态。
+	shareToken := d.ShareToken
+	if shareToken == "" {
+		var err error
+		shareToken, err = d.byoaRefreshShareToken(ctx, credential)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -40,7 +44,7 @@ func (d *QuarkUCShare) byoaDirectLink(ctx context.Context, file model.Obj, crede
 		"fids":            []string{fileID},
 		"fids_token":      []string{fidToken},
 		"pwd_id":          d.ShareId,
-		"stoken":          d.ShareToken,
+		"stoken":          shareToken,
 		"speedup_session": "",
 	}
 
@@ -54,15 +58,16 @@ func (d *QuarkUCShare) byoaDirectLink(ctx context.Context, file model.Obj, crede
 
 	resp, err := requestDownload()
 	if err != nil && strings.Contains(err.Error(), "token校验异常") && parentID != "" {
-		if newToken, tokenErr := d.byoaGetFileToken(ctx, credential, parentID, fileID); tokenErr == nil && newToken != "" {
+		if newToken, tokenErr := d.byoaGetFileToken(ctx, credential, shareToken, parentID, fileID); tokenErr == nil && newToken != "" {
 			body["fids_token"] = []string{newToken}
 			resp, err = requestDownload()
 		}
 	}
 
 	if err != nil && strings.Contains(err.Error(), "st invalid") {
-		if refreshErr := d.byoaRefreshShareToken(ctx, credential); refreshErr == nil {
-			body["stoken"] = d.ShareToken
+		if refreshed, refreshErr := d.byoaRefreshShareToken(ctx, credential); refreshErr == nil {
+			shareToken = refreshed
+			body["stoken"] = shareToken
 			resp, err = requestDownload()
 		}
 	}
@@ -71,11 +76,12 @@ func (d *QuarkUCShare) byoaDirectLink(ctx context.Context, file model.Obj, crede
 		return nil, err
 	}
 	if resp == nil || len(resp.Data) == 0 || resp.Data[0].DownloadUrl == "" {
-		// 空直链时做一次最小自愈：刷新分享 token，并在可用时刷新文件 token。
-		if refreshErr := d.byoaRefreshShareToken(ctx, credential); refreshErr == nil {
-			body["stoken"] = d.ShareToken
+		// 空直链时做一次最小自愈：刷新请求内分享 token，并在可用时刷新文件 token。
+		if refreshed, refreshErr := d.byoaRefreshShareToken(ctx, credential); refreshErr == nil {
+			shareToken = refreshed
+			body["stoken"] = shareToken
 			if parentID != "" {
-				if newToken, tokenErr := d.byoaGetFileToken(ctx, credential, parentID, fileID); tokenErr == nil && newToken != "" {
+				if newToken, tokenErr := d.byoaGetFileToken(ctx, credential, shareToken, parentID, fileID); tokenErr == nil && newToken != "" {
 					body["fids_token"] = []string{newToken}
 				}
 			}
@@ -104,8 +110,8 @@ func (d *QuarkUCShare) byoaDirectLink(ctx context.Context, file model.Obj, crede
 }
 
 // byoaRefreshShareToken 使用当前浏览器 Cookie 刷新分享级 stoken。
-// stoken 属于分享本身，可以继续保存在 Storage 中；用户 Cookie 不会写入 Storage。
-func (d *QuarkUCShare) byoaRefreshShareToken(ctx context.Context, credential string) error {
+// 返回值只用于当前请求，不写回 d.ShareToken 或 Storage，确保不同浏览器请求之间没有 BYOA 状态污染。
+func (d *QuarkUCShare) byoaRefreshShareToken(ctx context.Context, credential string) (string, error) {
 	data := base.Json{
 		"pwd_id":             d.ShareId,
 		"passcode":           d.SharePwd,
@@ -116,30 +122,26 @@ func (d *QuarkUCShare) byoaRefreshShareToken(ctx context.Context, credential str
 		req.SetBody(data)
 	}, &resp)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if resp.Data.ShareToken == "" {
 		if resp.Message != "" {
-			return errors.New(resp.Message)
+			return "", errors.New(resp.Message)
 		}
-		return errors.New("empty share token")
+		return "", errors.New("empty share token")
 	}
-	if d.ShareToken != resp.Data.ShareToken {
-		d.ShareToken = resp.Data.ShareToken
-		op.MustSaveDriverStorage(d)
-	}
-	return nil
+	return resp.Data.ShareToken, nil
 }
 
-// byoaGetFileToken 用当前浏览器 Cookie 从分享目录重新取得单个文件的 fid token。
-func (d *QuarkUCShare) byoaGetFileToken(ctx context.Context, credential, parentID, fileID string) (string, error) {
+// byoaGetFileToken 用当前浏览器 Cookie 和当前请求自己的 stoken 从分享目录重新取得单个文件的 fid token。
+func (d *QuarkUCShare) byoaGetFileToken(ctx context.Context, credential, shareToken, parentID, fileID string) (string, error) {
 	page := 1
 	for {
 		query := map[string]string{
 			"pr":            d.conf.pr,
 			"fr":            "pc",
 			"pwd_id":        d.ShareId,
-			"stoken":        d.ShareToken,
+			"stoken":        shareToken,
 			"pdir_fid":      parentID,
 			"force":         "0",
 			"_page":         strconv.Itoa(page),
