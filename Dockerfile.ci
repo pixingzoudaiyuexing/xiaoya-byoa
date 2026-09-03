@@ -26,4 +26,6 @@ RUN /entrypoint.sh version
 ENV UMASK=022 RUN_ARIA2=${INSTALL_ARIA2}
 VOLUME /opt/alist/data/
 EXPOSE 5244 5245
-CMD [ "/entrypoint.sh" ]
+
+# 不继承 Xiaoya 基础镜像的启动入口；BYOA entrypoint 必须成为实际 PID 1。
+ENTRYPOINT ["/entrypoint.sh"]
