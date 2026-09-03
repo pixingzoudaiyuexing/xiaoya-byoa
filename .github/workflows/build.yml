@@ -27,8 +27,16 @@ jobs:
           set -e
           go test ./internal/byoa -count=1
           go test ./server/common -run '^TestErrorRespConvertsBYOAAuthError$' -count=1
+          go test ./server/static -run '^TestBYOA' -count=1
           go test ./drivers/quark_uc_share -run '^TestQuarkBYOARequiresBrowserCredential$' -count=1
           go test ./drivers/aliyundrive_share2_open -run '^TestAliyunBYOARequiresBrowserCredential$' -count=1
+
+      - name: Validate BYOA deployment files
+        run: |
+          set -e
+          sh -n entrypoint.sh
+          sh -n scripts/byoa-xiaoya-bootstrap.sh
+          docker compose -f docker-compose.byoa.yml config >/dev/null
 
   build:
     needs: byoa-test
