@@ -34,6 +34,35 @@ func BYOAQuarkStatus(c *gin.Context) {
 	common.SuccessResp(c, status)
 }
 
+// BYOAAliyunStart 创建阿里云盘普通账号扫码二维码。
+// ck/t 由浏览器持有，服务端不创建 Session。
+func BYOAAliyunStart(c *gin.Context) {
+	result, err := byoa.StartAliyunQR(c.Request.Context())
+	if err != nil {
+		common.ErrorResp(c, err, 502)
+		return
+	}
+	common.SuccessResp(c, result)
+}
+
+// BYOAAliyunStatus 查询一次阿里扫码状态。
+// 扫码成功后仅把短期 Access Token 写入当前浏览器 HttpOnly Cookie；
+// 普通 Refresh Token 不持久化，也不返回给前端。
+func BYOAAliyunStatus(c *gin.Context) {
+	status, accessToken, err := byoa.CheckAliyunQR(c.Request.Context(), c.Query("ck"), c.Query("t"))
+	if err != nil {
+		common.ErrorResp(c, err, 502)
+		return
+	}
+	if status.Status == "success" {
+		if err := common.SetBYOACredentialCookie(c, byoa.ProviderAliyun, accessToken); err != nil {
+			common.ErrorResp(c, err, 500)
+			return
+		}
+	}
+	common.SuccessResp(c, status)
+}
+
 // BYOAClear 清除当前浏览器对应 Provider 的凭据，便于失效后重新扫码。
 func BYOAClear(c *gin.Context) {
 	provider := byoa.Provider(c.Query("provider"))
