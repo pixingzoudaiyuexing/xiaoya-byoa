@@ -14,7 +14,6 @@ import (
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
-	"github.com/go-resty/resty/v2"
 	"github.com/google/uuid"
 )
 
