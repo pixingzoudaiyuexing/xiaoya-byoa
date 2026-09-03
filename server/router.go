@@ -53,8 +53,8 @@ func Init(e *gin.Engine) {
 	g.GET("/ad/*path", middlewares.PathParse, archiveSignCheck, downloadLimiter, handles.ArchiveDown)
 	g.GET("/ap/*path", middlewares.PathParse, archiveSignCheck, downloadLimiter, handles.ArchiveProxy)
 	g.GET("/ae/*path", middlewares.PathParse, archiveSignCheck, downloadLimiter, handles.ArchiveInternalExtract)
-	g.HEAD("/ad/*path", middlewares.PathParse, archiveSignCheck, handles.Down)
-	g.HEAD("/ap/*path", middlewares.PathParse, archiveSignCheck, handles.Proxy)
+	g.HEAD("/ad/*path", middlewares.PathParse, archiveSignCheck, handles.ArchiveDown)
+	g.HEAD("/ap/*path", middlewares.PathParse, archiveSignCheck, handles.ArchiveProxy)
 	g.HEAD("/ae/*path", middlewares.PathParse, archiveSignCheck, handles.ArchiveInternalExtract)
 
 	g.GET("/sd/:sid", middlewares.EmptyPathParse, middlewares.SharingIdParse, downloadLimiter, handles.SharingDown)
@@ -92,7 +92,7 @@ func Init(e *gin.Engine) {
 	api.GET("/authn/webauthn_begin_login", handles.BeginAuthnLogin)
 	api.POST("/authn/webauthn_finish_login", handles.FinishAuthnLogin)
 	webauthn.GET("/webauthn_begin_registration", handles.BeginAuthnRegistration)
-	webauthn.POST("/webauthn_finish_registration", handles.FinishAuthnRegistration)
+	webauthn.POST("/webauthn_finish_registration", handles.FinishAuthnLogin)
 	webauthn.POST("/delete_authn", handles.DeleteAuthnLogin)
 	webauthn.GET("/getcredentials", handles.GetAuthnCredentials)
 
@@ -139,7 +139,7 @@ func admin(g *gin.RouterGroup) {
 	user.POST("/cancel_2fa", handles.Cancel2FAById)
 	user.POST("/delete", handles.DeleteUser)
 	user.POST("/del_cache", handles.DelUserCache)
-	user.GET("/sshkey/list", handles.ListPublicKeys)
+	user.GET("/sshkey/list", handles.ListPublicKey)
 	user.POST("/sshkey/delete", handles.DeletePublicKey)
 
 	storage := g.Group("/storage")
@@ -155,7 +155,7 @@ func admin(g *gin.RouterGroup) {
 	driver := g.Group("/driver")
 	driver.GET("/list", handles.ListDriverInfo)
 	driver.GET("/names", handles.ListDriverNames)
-	driver.GET("/info", handles.ListDriverInfo)
+	driver.GET("/info", handles.GetDriverInfo)
 
 	setting := g.Group("/setting")
 	setting.GET("/get", handles.GetSetting)
@@ -244,9 +244,9 @@ func _fs(g *gin.RouterGroup) {
 	g.POST("/archive/decompress", handles.FsArchiveDecompress)
 	// Torrent 相关接口
 	g.POST("/torrent/parse", handles.ParseTorrent)
-	g.POST("/torrent/upload_parse", handles.TorrentUploadParse)
+	g.POST("/torrent/upload_parse", handles.UploadTorrentAndParse)
 	g.POST("/torrent/rapid_upload", handles.TorrentRapidUpload)
-	g.POST("/torrent/generate", handles.TorrentGenerate)
+	g.POST("/torrent/generate", handles.GenerateTorrentForPath)
 	// 分享服务端转存(源驱动实现 driver.ShareSaver 时可用)
 	g.POST("/share/save", handles.FsShareSave)
 	// Direct upload (client-side upload to storage)
