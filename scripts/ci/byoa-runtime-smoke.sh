@@ -38,10 +38,11 @@ wait_for_ping() {
 }
 
 start_container() {
+  local update_mode="${1:-if-newer}"
   docker run -d \
     --name "$CONTAINER" \
     -e BYOA_XIAOYA_STRICT=true \
-    -e BYOA_XIAOYA_UPDATE=if-missing \
+    -e "BYOA_XIAOYA_UPDATE=${update_mode}" \
     -v "$VOLUME:/opt/alist/data" \
     -p "${PORT}:5244" \
     "$IMAGE" >/dev/null
@@ -85,6 +86,15 @@ key_hash() {
   '
 }
 
+admin_hash() {
+  docker exec "$CONTAINER" sqlite3 -separator '|' /opt/alist/data/data.db \
+    "select * from x_users where id=1;" | sha256sum | awk '{print $1}'
+}
+
+data_version() {
+  docker exec "$CONTAINER" sh -c 'tr -d "\r\n " < /opt/alist/data/xiaoya_data.version'
+}
+
 assert_guest_catalog() {
   local guest_body
   guest_body="$(curl -fsS \
@@ -100,6 +110,55 @@ content = (body.get("data") or {}).get("content") or []
 assert len(content) > 0, body
 print(f"Guest catalog entries: {len(content)}")
 print("Guest root names:", ", ".join(x.get("name", "") for x in content[:20]))
+PY
+}
+
+assert_qr_protocols() {
+  BYOA_BASE_URL="$BASE_URL" python3 - <<'PY'
+import json
+import os
+import time
+import urllib.parse
+import urllib.request
+
+base = os.environ["BYOA_BASE_URL"]
+
+def get_json(path, attempts=3):
+    error = None
+    for attempt in range(attempts):
+        try:
+            request = urllib.request.Request(base + path, method="GET")
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            error = exc
+            if attempt + 1 < attempts:
+                time.sleep(1)
+    raise error
+
+def assert_start(provider, required):
+    body = get_json(f"/api/public/byoa/{provider}/start")
+    assert body.get("code") == 200, body
+    data = body.get("data") or {}
+    for key in required:
+        assert data.get(key), (provider, key, body)
+    assert str(data.get("qr_image", "")).startswith("data:image/png;base64,"), body
+    print(f"{provider} QR start passed")
+    return data
+
+quark = assert_start("quark", ("token", "qr_url", "qr_image"))
+quark_query = urllib.parse.urlencode({"token": quark["token"]})
+quark_status = get_json("/api/public/byoa/quark/status?" + quark_query)
+assert quark_status.get("code") == 200, quark_status
+assert (quark_status.get("data") or {}).get("status") in {"pending", "scanned", "expired"}, quark_status
+print("quark QR status poll passed:", (quark_status.get("data") or {}).get("status"))
+
+aliyun = assert_start("aliyun", ("ck", "t", "qr_url", "qr_image"))
+aliyun_query = urllib.parse.urlencode({"ck": aliyun["ck"], "t": aliyun["t"]})
+aliyun_status = get_json("/api/public/byoa/aliyun/status?" + aliyun_query)
+assert aliyun_status.get("code") == 200, aliyun_status
+assert (aliyun_status.get("data") or {}).get("status") in {"pending", "scanned", "expired", "canceled"}, aliyun_status
+print("aliyun QR status poll passed:", (aliyun_status.get("data") or {}).get("status"))
 PY
 }
 
@@ -231,27 +290,52 @@ PY
 }
 
 echo '=== First normal start from an empty data volume ==='
-start_container
+start_container if-newer
 first_snapshot="$(storage_snapshot)"
 assert_storage_snapshot "$first_snapshot"
 first_key_hash="$(key_hash)"
+first_admin_hash="$(admin_hash)"
+first_version="$(data_version)"
+[[ "$first_version" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
+echo "Xiaoya data version: ${first_version}"
 echo "BYOA key hash (first start): ${first_key_hash}"
 assert_guest_catalog
+assert_qr_protocols
 assert_anonymous_provider_browse_and_auth
 
 echo '=== Recreate container with the same persistent data volume ==='
 docker rm -f "$CONTAINER" >/dev/null
-start_container
+start_container if-newer
 second_snapshot="$(storage_snapshot)"
 assert_storage_snapshot "$second_snapshot"
 second_key_hash="$(key_hash)"
-echo "BYOA key hash (restart): ${second_key_hash}"
+second_admin_hash="$(admin_hash)"
+second_version="$(data_version)"
 
 test "$second_snapshot" = "$first_snapshot"
 test "$second_key_hash" = "$first_key_hash"
+test "$second_admin_hash" = "$first_admin_hash"
+test "$second_version" = "$first_version"
 assert_guest_catalog
 
-echo 'BYOA first-start and persistence smoke passed'
+echo '=== Force an old content version and verify safe refresh ==='
+docker exec "$CONTAINER" sh -c "printf '%s\n' '0.0.0' > /opt/alist/data/xiaoya_data.version"
+docker rm -f "$CONTAINER" >/dev/null
+start_container if-newer
+refresh_snapshot="$(storage_snapshot)"
+assert_storage_snapshot "$refresh_snapshot"
+refresh_key_hash="$(key_hash)"
+refresh_admin_hash="$(admin_hash)"
+refresh_version="$(data_version)"
+
+[[ "$refresh_version" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
+test "$refresh_version" != "0.0.0"
+test "$refresh_key_hash" = "$first_key_hash"
+test "$refresh_admin_hash" = "$first_admin_hash"
+assert_guest_catalog
+
+echo "Xiaoya data version after forced refresh: ${refresh_version}"
+echo 'BYOA first-start, QR, persistence and content-refresh smoke passed'
 
 docker rm -f "$CONTAINER" >/dev/null
 trap - EXIT
