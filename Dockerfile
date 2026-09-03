@@ -35,4 +35,6 @@ RUN /entrypoint.sh version
 ENV UMASK=022 RUN_ARIA2=${INSTALL_ARIA2}
 VOLUME /opt/alist/data/
 EXPOSE 5244 5245
-CMD [ "/entrypoint.sh" ]
+
+# 明确覆盖 Xiaoya 基础镜像入口，确保 BYOA bootstrap/normalize 由同一 PID 1 控制。
+ENTRYPOINT ["/entrypoint.sh"]
