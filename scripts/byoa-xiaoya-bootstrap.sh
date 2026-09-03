@@ -89,6 +89,7 @@ ensure_seed_db() {
   fi
 
   log "已从 Xiaoya 基础镜像初始化 seed data.db"
+  return 0
 }
 
 ensure_auth_token() {
@@ -114,6 +115,7 @@ refresh_index() {
   index_zip="${WORK_DIR}/index.zip"
   index_dir="${WORK_DIR}/index"
 
+  log "开始下载 Xiaoya index.zip"
   if ! download_public_file index.zip "$index_zip"; then
     warn "下载 index.zip 失败"
     return 1
@@ -149,6 +151,7 @@ apply_public_update() {
   update_dir="${WORK_DIR}/update"
   db_backup="${WORK_DIR}/data.db.before-update"
 
+  log "开始下载 Xiaoya update.zip"
   if ! download_public_file update.zip "$update_zip"; then
     warn "下载 update.zip 失败"
     return 1
@@ -167,21 +170,18 @@ apply_public_update() {
     return 1
   fi
 
-  # 与 Xiaoya stock updater 保持必要的数据兼容处理，但不执行其进程/服务副作用。
   sed -i 's#:120,#:300,#g' "$update_sql"
 
   fixed_token='alist-09ceb38a-f143-47f7-b255-c3eec819cd7b0lSmqjgBRIMJakAkbJIE2KzO6h2CUVBuEkqrLiA5cJJzOzYxJtCTIGBXXnhrg7Av'
   auth_token="$(ensure_auth_token)"
   escaped_token="$(printf '%s' "$auth_token" | sed 's/[&|]/\\&/g')"
   sed -i "s|${fixed_token}|${escaped_token}|g" "$update_sql"
-
-  # 当前 MVP 不支持 115/UC/PikPak；在 SQL 导入前直接过滤明显的 PikPakShare 行，
-  # 其余账号型驱动由 normalize 统一删除。
   sed -i '/PikPakShare/d' "$update_sql"
 
   cp "$DB_PATH" "$db_backup"
   rm -f "${DB_PATH}-shm" "${DB_PATH}-wal"
 
+  log "开始导入 Xiaoya update.sql"
   set +e
   sqlite3 "$DB_PATH" <<SQL
 DROP TABLE IF EXISTS x_storages;
@@ -206,10 +206,12 @@ SQL
 }
 
 mkdir -p "$DATA_DIR" /data /www/data "$WORK_DIR"
+log "bootstrap start mode=${UPDATE_MODE} strict=${STRICT_MODE} db=${DB_PATH}"
 
-# 公开 Quark 分享清单持久化到 data volume，同时兼容 Xiaoya 传统 /data 路径。
+log "同步 Quark 公开分享清单"
 if download_public_file quarkshare_list.txt "${DATA_DIR}/quarkshare_list.txt"; then
   cp "${DATA_DIR}/quarkshare_list.txt" /data/quarkshare_list.txt
+  log "Quark 公开分享清单已就绪"
 else
   warn "下载 quarkshare_list.txt 失败"
   if [ "$STRICT_MODE" = true ] && [ ! -s "${DATA_DIR}/quarkshare_list.txt" ]; then
@@ -220,6 +222,7 @@ else
   fi
 fi
 
+log "检查/初始化 seed data.db"
 if ! ensure_seed_db; then
   if [ "$STRICT_MODE" = true ]; then
     exit 1
@@ -227,26 +230,33 @@ if ! ensure_seed_db; then
   warn "无法初始化 Xiaoya seed data.db"
   exit 0
 fi
+log "seed data.db 检查完成"
 
 need_update=false
+log "计算内容更新策略 mode=${UPDATE_MODE}"
 case "$UPDATE_MODE" in
   always)
     need_update=true
     REMOTE_VERSION="$(fetch_remote_version || true)"
+    log "远端 Xiaoya 数据版本：${REMOTE_VERSION:-unavailable}"
     ;;
   if-missing)
     LOCAL_VERSION="$(read_local_version || true)"
+    log "本地 Xiaoya 数据版本：${LOCAL_VERSION:-missing}"
     if [ -z "$LOCAL_VERSION" ]; then
       need_update=true
       REMOTE_VERSION="$(fetch_remote_version || true)"
+      log "远端 Xiaoya 数据版本：${REMOTE_VERSION:-unavailable}"
     fi
     ;;
   if-newer)
     REMOTE_VERSION="$(fetch_remote_version || true)"
+    log "远端 Xiaoya 数据版本：${REMOTE_VERSION:-unavailable}"
     if [ -z "$REMOTE_VERSION" ]; then
       warn "无法检查 Xiaoya 远端版本，继续使用本地内容"
     else
       LOCAL_VERSION="$(read_local_version || true)"
+      log "本地 Xiaoya 数据版本：${LOCAL_VERSION:-missing}"
       if [ -z "$LOCAL_VERSION" ] || [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
         log "发现 Xiaoya 数据版本变化：${LOCAL_VERSION:-unknown} -> ${REMOTE_VERSION}"
         need_update=true
@@ -256,17 +266,20 @@ case "$UPDATE_MODE" in
     fi
     ;;
   never)
+    log "已配置为跳过 Xiaoya 内容更新"
     ;;
   *)
     warn "未知 BYOA_XIAOYA_UPDATE=$UPDATE_MODE，按 if-newer 处理"
     REMOTE_VERSION="$(fetch_remote_version || true)"
     LOCAL_VERSION="$(read_local_version || true)"
+    log "版本比较 local=${LOCAL_VERSION:-missing} remote=${REMOTE_VERSION:-unavailable}"
     if [ -n "$REMOTE_VERSION" ] && [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
       need_update=true
     fi
     ;;
 esac
 
+log "内容更新决策 need_update=${need_update}"
 if [ "$need_update" = true ]; then
   log "准备无私人 Token 的 Xiaoya 官方数据更新"
   if ! apply_public_update; then
