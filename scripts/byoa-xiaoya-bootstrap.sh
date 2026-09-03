@@ -11,14 +11,12 @@ set -eu
 
 DATA_DIR="${BYOA_DATA_DIR:-/opt/alist/data}"
 DB_PATH="${DATA_DIR}/data.db"
-VERSION_FILE="${DATA_DIR}/xiaoya_data.version"
-VERSION_PENDING="${VERSION_FILE}.pending"
 XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoyaDev/data/main}"
 UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 REMOTE_VERSION=""
 ADMIN_BACKED_UP=false
-rm -f "$VERSION_PENDING"
+UPDATE_SUCCEEDED=false
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -41,7 +39,17 @@ fetch_remote_version() {
   return 1
 }
 
-stage_updated_version() {
+read_local_version() {
+  [ -s "$DB_PATH" ] || return 1
+  value="$(sqlite3 "$DB_PATH" "SELECT value FROM byoa_state WHERE key='xiaoya_data_version' LIMIT 1;" 2>/dev/null | tr -d '\r\n ' || true)"
+  if [ -n "$value" ] && valid_version "$value"; then
+    printf '%s' "$value"
+    return 0
+  fi
+  return 1
+}
+
+resolve_updated_version() {
   candidate_version="$REMOTE_VERSION"
 
   if [ -z "$candidate_version" ] || ! valid_version "$candidate_version"; then
@@ -61,12 +69,23 @@ stage_updated_version() {
   fi
 
   if [ -n "$candidate_version" ] && valid_version "$candidate_version"; then
-    printf '%s\n' "$candidate_version" > "$VERSION_PENDING"
+    printf '%s' "$candidate_version"
     return 0
   fi
-
-  warn "Xiaoya 更新成功，但未取得有效数据版本；下次启动会重新检查"
   return 1
+}
+
+store_local_version() {
+  version="$1"
+  valid_version "$version" || return 1
+  sqlite3 "$DB_PATH" <<SQL
+CREATE TABLE IF NOT EXISTS byoa_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+INSERT OR REPLACE INTO byoa_state (key, value)
+VALUES ('xiaoya_data_version', '$version');
+SQL
 }
 
 backup_admin() {
@@ -120,10 +139,7 @@ case "$UPDATE_MODE" in
       if [ -z "$REMOTE_VERSION" ]; then
         warn "无法检查 Xiaoya 远端版本，继续使用本地内容"
       else
-        LOCAL_VERSION=""
-        if [ -s "$VERSION_FILE" ]; then
-          LOCAL_VERSION="$(tr -d '\r\n ' < "$VERSION_FILE")"
-        fi
+        LOCAL_VERSION="$(read_local_version || true)"
         if [ -z "$LOCAL_VERSION" ] || [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
           log "发现 Xiaoya 数据版本变化：${LOCAL_VERSION:-unknown} -> ${REMOTE_VERSION}"
           need_update=true
@@ -142,10 +158,7 @@ case "$UPDATE_MODE" in
       REMOTE_VERSION="$(fetch_remote_version || true)"
     else
       REMOTE_VERSION="$(fetch_remote_version || true)"
-      LOCAL_VERSION=""
-      if [ -s "$VERSION_FILE" ]; then
-        LOCAL_VERSION="$(tr -d '\r\n ' < "$VERSION_FILE")"
-      fi
+      LOCAL_VERSION="$(read_local_version || true)"
       if [ -n "$REMOTE_VERSION" ] && [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
         need_update=true
       fi
@@ -188,8 +201,7 @@ if [ "$need_update" = true ]; then
         exit 1
       fi
     elif /updateall; then
-      # 只暂存版本号；必须等后面的数据库归一化和数量检查也成功，才会原子提交为正式版本文件。
-      stage_updated_version || true
+      UPDATE_SUCCEEDED=true
     else
       warn "Xiaoya /updateall 执行失败"
       restore_admin || true
@@ -202,7 +214,6 @@ fi
 
 if [ ! -s "$DB_PATH" ]; then
   warn "尚未生成 Xiaoya data.db，继续启动 PowerList 空库"
-  rm -f "$VERSION_PENDING"
   exit 0
 fi
 
@@ -261,11 +272,14 @@ if [ "$STRICT_MODE" = true ]; then
   [ "$quark_count" -gt 0 ]
 fi
 
-# 两阶段提交：只有 updateall 成功产生 pending，且 BYOA 数据归一化/数量检查走到这里后，才更新正式版本。
-if [ -s "$VERSION_PENDING" ]; then
-  committed_version="$(tr -d '\r\n ' < "$VERSION_PENDING")"
-  mv -f "$VERSION_PENDING" "$VERSION_FILE"
-  log "已记录 Xiaoya 数据版本：${committed_version}"
-else
-  rm -f "$VERSION_PENDING"
+# 内容数据库本身就是持久状态，因此把 Xiaoya 数据版本放进独立 byoa_state 表，
+# 避免 /updateall 对容器文件布局的重建影响版本标记。
+if [ "$UPDATE_SUCCEEDED" = true ]; then
+  committed_version="$(resolve_updated_version || true)"
+  if [ -n "$committed_version" ] && valid_version "$committed_version"; then
+    store_local_version "$committed_version"
+    log "已记录 Xiaoya 数据版本：${committed_version}"
+  else
+    warn "Xiaoya 更新成功，但未取得有效数据版本；下次启动会重新检查"
+  fi
 fi
