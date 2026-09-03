@@ -184,7 +184,6 @@ jobs:
             -H 'Content-Type: application/json' \
             -d '{"path":"/","password":"","page":1,"per_page":0,"refresh":false}' \
             http://127.0.0.1:15244/api/fs/list)"
-          printf '%s\n' "$guest_body"
           GUEST_BODY="$guest_body" python3 - <<'PY'
           import json
           import os
@@ -194,6 +193,63 @@ jobs:
           content = (body.get("data") or {}).get("content") or []
           assert len(content) > 0, body
           print(f"Guest catalog entries: {len(content)}")
+          print("Guest root names:", ", ".join(x.get("name", "") for x in content[:20]))
+          PY
+
+          echo '=== Anonymous provider catalog checks ==='
+          docker exec xiaoya-byoa-ci sqlite3 /opt/alist/data/data.db \
+            "select mount_path from x_storages where driver='AliyunShare' order by id limit 8;" \
+            > /tmp/ali_paths.txt
+          docker exec xiaoya-byoa-ci sqlite3 /opt/alist/data/data.db \
+            "select mount_path from x_storages where driver='QuarkShare' order by id limit 6;" \
+            > /tmp/quark_paths.txt
+
+          python3 - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          endpoint = "http://127.0.0.1:15244/api/fs/list"
+
+          def list_path(path):
+              payload = json.dumps({
+                  "path": path,
+                  "password": "",
+                  "page": 1,
+                  "per_page": 0,
+                  "refresh": False,
+              }, ensure_ascii=False).encode("utf-8")
+              request = urllib.request.Request(
+                  endpoint,
+                  data=payload,
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              with urllib.request.urlopen(request, timeout=15) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          def verify_provider(provider, filename):
+              with open(filename, "r", encoding="utf-8") as handle:
+                  paths = [line.strip() for line in handle if line.strip()]
+              assert paths, f"{provider}: no storage mount paths"
+
+              failures = []
+              for path in paths:
+                  try:
+                      body = list_path(path)
+                      content = (body.get("data") or {}).get("content") or []
+                      if body.get("code") == 200 and content:
+                          print(f"{provider} anonymous list passed: {path} ({len(content)} entries)")
+                          print(f"{provider} sample: " + ", ".join(x.get("name", "") for x in content[:5]))
+                          return
+                      failures.append(f"{path}: code={body.get('code')} message={body.get('message')} entries={len(content)}")
+                  except Exception as exc:
+                      failures.append(f"{path}: {type(exc).__name__}: {exc}")
+              raise AssertionError(provider + " anonymous list failed: " + " | ".join(failures))
+
+          # urllib opener carries no Cookie jar and sends no BYOA credentials.
+          verify_provider("AliyunShare", "/tmp/ali_paths.txt")
+          verify_provider("QuarkShare", "/tmp/quark_paths.txt")
           PY
 
           docker rm -f xiaoya-byoa-ci >/dev/null
