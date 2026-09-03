@@ -103,6 +103,50 @@ jobs:
             printf "/opt/alist/data -> "; readlink -f /opt/alist/data 2>/dev/null || true
           '
 
+          echo '=== Xiaoya tokenless data bootstrap ==='
+          docker run --rm --entrypoint sh xiaoya-byoa:ci -c '
+            set -eu
+            mkdir -p /data /www/data /opt/alist/data
+            rm -f \
+              /data/mytoken.txt \
+              /data/myopentoken.txt \
+              /data/temp_transfer_folder_id.txt \
+              /data/quark_cookie.txt
+
+            curl -fsSL --retry 3 \
+              https://raw.githubusercontent.com/xiaoyaDev/data/main/quarkshare_list.txt \
+              -o /data/quarkshare_list.txt
+            test -s /data/quarkshare_list.txt
+            test -x /updateall
+
+            /updateall
+
+            test -s /opt/alist/data/data.db
+            for secret_file in \
+              /data/mytoken.txt \
+              /data/myopentoken.txt \
+              /data/temp_transfer_folder_id.txt \
+              /data/quark_cookie.txt; do
+              if [ -s "$secret_file" ]; then
+                echo "Unexpected server credential created: $secret_file"
+                exit 1
+              fi
+            done
+
+            echo "=== Storage counts after tokenless updateall ==="
+            sqlite3 /opt/alist/data/data.db \
+              "select driver, count(*) from x_storages group by driver order by driver;"
+
+            ali_count="$(sqlite3 /opt/alist/data/data.db \
+              "select count(*) from x_storages where driver in ('AliyundriveShare','AliyundriveShare2Open','AliyundriveShare2Pan115');")"
+            quark_count="$(sqlite3 /opt/alist/data/data.db \
+              "select count(*) from x_storages where driver='QuarkShare';")"
+            echo "Aliyun share storages: $ali_count"
+            echo "Quark share storages: $quark_count"
+            test "$ali_count" -gt 0
+            test "$quark_count" -gt 0
+          '
+
           container_id="$(docker run -d --name xiaoya-byoa-ci -p 15244:5244 xiaoya-byoa:ci)"
           cleanup() {
             docker logs xiaoya-byoa-ci 2>/dev/null || true
