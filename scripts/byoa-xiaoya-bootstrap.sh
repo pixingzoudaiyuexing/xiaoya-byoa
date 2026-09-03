@@ -17,8 +17,8 @@ UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 REMOTE_VERSION=""
 ADMIN_BACKED_UP=false
-UPDATE_MARKER="/tmp/byoa-xiaoya-update.$$"
-rm -f "$UPDATE_MARKER"
+UPDATE_BLOCKED="/tmp/byoa-xiaoya-update-blocked.$$"
+rm -f "$UPDATE_BLOCKED"
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -133,6 +133,7 @@ if [ "$need_update" = true ]; then
   # 已有库更新时若这个清单暂时下载失败，宁可继续保留旧库，也不要运行 updateall 后丢失 QuarkShare。
   if ! curl -fsSL --retry 3 "${XIAOYA_DATA_URL}/quarkshare_list.txt" -o /data/quarkshare_list.txt; then
     warn "下载 quarkshare_list.txt 失败"
+    : > "$UPDATE_BLOCKED"
     if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
       exit 1
     fi
@@ -145,6 +146,7 @@ if [ "$need_update" = true ]; then
     # 更新后恢复，确保内容更新不改变本地管理账号。
     if [ -s "$DB_PATH" ]; then
       if ! backup_admin; then
+        : > "$UPDATE_BLOCKED"
         if [ "$STRICT_MODE" = true ]; then
           exit 1
         fi
@@ -153,15 +155,14 @@ if [ "$need_update" = true ]; then
 
     if [ ! -x /updateall ]; then
       warn "基础镜像缺少 /updateall"
+      : > "$UPDATE_BLOCKED"
       restore_admin || true
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
       fi
-    elif /updateall; then
-      # 使用文件标记记录真实成功，避免不同 /bin/sh 对条件分支变量状态的差异影响版本持久化。
-      : > "$UPDATE_MARKER"
-    else
+    elif ! /updateall; then
       warn "Xiaoya /updateall 执行失败"
+      : > "$UPDATE_BLOCKED"
       restore_admin || true
       if [ "$STRICT_MODE" = true ] || [ ! -s "$DB_PATH" ]; then
         exit 1
@@ -172,7 +173,7 @@ fi
 
 if [ ! -s "$DB_PATH" ]; then
   warn "尚未生成 Xiaoya data.db，继续启动 PowerList 空库"
-  rm -f "$UPDATE_MARKER"
+  rm -f "$UPDATE_BLOCKED"
   exit 0
 fi
 
@@ -231,9 +232,9 @@ if [ "$STRICT_MODE" = true ]; then
   [ "$quark_count" -gt 0 ]
 fi
 
-# 只在 updateall 真正成功且 BYOA 归一化通过后记录实际数据版本。
-# Xiaoya 当前 updateall 会把版本写到 /version.txt；同时兼容 /www/data/version.txt。
-if [ "$need_update" = true ] && [ -f "$UPDATE_MARKER" ]; then
+# 只要本轮更新没有进入任何失败/跳过分支，并且 BYOA 归一化已经通过，就记录实际数据版本。
+# 采用“失败才落标记”的方式，避免依赖不同 /bin/sh 对成功分支状态的细节。
+if [ "$need_update" = true ] && [ ! -f "$UPDATE_BLOCKED" ]; then
   ACTUAL_VERSION=""
   if [ -s /version.txt ]; then
     ACTUAL_VERSION="$(tr -d '\r\n ' < /version.txt)"
@@ -256,4 +257,4 @@ if [ "$need_update" = true ] && [ -f "$UPDATE_MARKER" ]; then
   fi
 fi
 
-rm -f "$UPDATE_MARKER"
+rm -f "$UPDATE_BLOCKED"
