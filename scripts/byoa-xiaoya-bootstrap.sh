@@ -28,11 +28,23 @@ warn() {
 }
 
 valid_version() {
-  printf '%s' "$1" | grep -Eq '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'
+  printf '%s' "$1" | grep -Eq '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'
+}
+
+download_public_file() {
+  name="$1"
+  dest="$2"
+  curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 \
+    "${XIAOYA_DATA_URL}/${name}" -o "$dest"
 }
 
 fetch_remote_version() {
-  value="$(curl -fsSL --retry 2 --max-time 8 "${XIAOYA_DATA_URL}/version.txt" 2>/dev/null | tr -d '\r\n ' || true)"
+  version_file="${WORK_DIR}/version.txt"
+  rm -f "$version_file"
+  if ! download_public_file version.txt "$version_file"; then
+    return 1
+  fi
+  value="$(tr -d '\r\n ' < "$version_file" 2>/dev/null || true)"
   if [ -n "$value" ] && valid_version "$value"; then
     printf '%s' "$value"
     return 0
@@ -42,19 +54,14 @@ fetch_remote_version() {
 
 read_local_version() {
   [ -s "$DB_PATH" ] || return 1
+  table_exists="$(sqlite3 "$DB_PATH" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='byoa_state';" 2>/dev/null | tr -d '\r\n ' || true)"
+  [ "$table_exists" = "1" ] || return 1
   value="$(sqlite3 "$DB_PATH" "SELECT value FROM byoa_state WHERE key='xiaoya_data_version' LIMIT 1;" 2>/dev/null | tr -d '\r\n ' || true)"
   if [ -n "$value" ] && valid_version "$value"; then
     printf '%s' "$value"
     return 0
   fi
   return 1
-}
-
-download_public_file() {
-  name="$1"
-  dest="$2"
-  curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 \
-    "${XIAOYA_DATA_URL}/${name}" -o "$dest"
 }
 
 ensure_seed_db() {
@@ -253,7 +260,11 @@ case "$UPDATE_MODE" in
     REMOTE_VERSION="$(fetch_remote_version || true)"
     log "远端 Xiaoya 数据版本：${REMOTE_VERSION:-unavailable}"
     if [ -z "$REMOTE_VERSION" ]; then
-      warn "无法检查 Xiaoya 远端版本，继续使用本地内容"
+      warn "无法检查 Xiaoya 远端版本"
+      if [ "$STRICT_MODE" = true ]; then
+        exit 1
+      fi
+      warn "继续使用本地内容"
     else
       LOCAL_VERSION="$(read_local_version || true)"
       log "本地 Xiaoya 数据版本：${LOCAL_VERSION:-missing}"
