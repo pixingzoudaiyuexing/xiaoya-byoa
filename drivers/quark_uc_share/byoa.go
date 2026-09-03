@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
+	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
@@ -168,6 +169,38 @@ func (d *QuarkUCShare) byoaGetFileToken(ctx context.Context, credential, parentI
 	return "", errors.New("file not found")
 }
 
+// quarkBYOAAuthExpired 只识别明确的“当前浏览器登录已失效”信号。
+// 分享 stoken、文件 token、限流等错误不能误判成账号过期，否则会无意义地反复弹扫码。
+func quarkBYOAAuthExpired(httpStatus int, apiErr Resp) bool {
+	if httpStatus == http.StatusUnauthorized || apiErr.Status == http.StatusUnauthorized || apiErr.Code == http.StatusUnauthorized {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(apiErr.Message))
+	if message == "" {
+		return false
+	}
+	markers := []string{
+		"未登录",
+		"请登录",
+		"登录失效",
+		"登录已失效",
+		"登录过期",
+		"登录已过期",
+		"not login",
+		"not logged",
+		"login expired",
+		"login invalid",
+		"cookie expired",
+		"cookie invalid",
+	}
+	for _, marker := range markers {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // byoaRequestAt 是 BYOA 专用请求函数。
 // 与原 requestAt 的关键区别：不会把响应里的账号 Cookie 写回包级全局状态，避免 A 浏览器污染 B 浏览器。
 func (d *QuarkUCShare) byoaRequestAt(ctx context.Context, api, credential, pathname, method string, callback base.ReqCallback, resp interface{}) ([]byte, error) {
@@ -205,6 +238,9 @@ func (d *QuarkUCShare) byoaRequestAt(ctx context.Context, api, credential, pathn
 		if err != nil {
 			return nil, err
 		}
+	}
+	if quarkBYOAAuthExpired(res.StatusCode(), apiErr) {
+		return nil, &byoa.AuthRequiredError{Provider: byoa.ProviderQuark}
 	}
 	if apiErr.Status >= 400 || apiErr.Code != 0 {
 		if apiErr.Message == "" {
