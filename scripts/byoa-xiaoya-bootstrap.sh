@@ -12,6 +12,7 @@ set -eu
 DATA_DIR="${BYOA_DATA_DIR:-/opt/alist/data}"
 DB_PATH="${DATA_DIR}/data.db"
 XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoyaDev/data/main}"
+XIAOYA_VERSION_API_URL="${BYOA_XIAOYA_VERSION_API_URL:-https://api.github.com/repos/xiaoyaDev/data/contents/version.txt?ref=main}"
 UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 WORK_DIR="/tmp/byoa-xiaoya"
@@ -27,8 +28,20 @@ warn() {
   printf '[BYOA Xiaoya] WARN: %s\n' "$*" >&2
 }
 
+# 只接受三段纯数字版本。避免依赖不同 BusyBox/grep 版本的 ERE 行为。
 valid_version() {
-  printf '%s' "$1" | grep -Eq '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'
+  version_value="$1"
+  old_ifs="$IFS"
+  IFS='.'
+  set -- $version_value
+  IFS="$old_ifs"
+  [ "$#" -eq 3 ] || return 1
+  for version_part in "$@"; do
+    case "$version_part" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+  done
+  return 0
 }
 
 download_public_file() {
@@ -41,14 +54,35 @@ download_public_file() {
 fetch_remote_version() {
   version_file="${WORK_DIR}/version.txt"
   rm -f "$version_file"
-  if ! download_public_file version.txt "$version_file"; then
-    return 1
+
+  # 第一来源：xiaoyaDev/data 官方 raw 文件。
+  if download_public_file version.txt "$version_file"; then
+    value="$(tr -d '\r\n ' < "$version_file" 2>/dev/null || true)"
+    if [ -n "$value" ] && valid_version "$value"; then
+      printf '%s' "$value"
+      return 0
+    fi
+    warn "Xiaoya raw version.txt 内容无效：${value:-empty}"
+  else
+    warn "下载 Xiaoya raw version.txt 失败，尝试 GitHub Contents API"
   fi
-  value="$(tr -d '\r\n ' < "$version_file" 2>/dev/null || true)"
-  if [ -n "$value" ] && valid_version "$value"; then
-    printf '%s' "$value"
-    return 0
+
+  # 第二来源仍然是同一官方 GitHub 仓库；只切换 GitHub 的传输入口。
+  rm -f "$version_file"
+  if curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 \
+      -H 'Accept: application/vnd.github.raw+json' \
+      -H 'User-Agent: xiaoya-byoa' \
+      "$XIAOYA_VERSION_API_URL" -o "$version_file"; then
+    value="$(tr -d '\r\n ' < "$version_file" 2>/dev/null || true)"
+    if [ -n "$value" ] && valid_version "$value"; then
+      printf '%s' "$value"
+      return 0
+    fi
+    warn "Xiaoya API version.txt 内容无效：${value:-empty}"
+  else
+    warn "通过 GitHub Contents API 下载 Xiaoya version.txt 失败"
   fi
+
   return 1
 }
 
