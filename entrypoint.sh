@@ -5,6 +5,27 @@ umask ${UMASK}
 if [ "$1" = "version" ]; then
   ./alist version
 else
+  # BYOA Cookie 使用一把服务实例级 AES-256 密钥加密。
+  # 该密钥只用于解密浏览器自行携带的密文，不保存任何用户 Session 或网盘凭据。
+  # 默认放在持久化 data volume，容器重启后浏览器无需重新扫码。
+  if [ -z "${BYOA_COOKIE_KEY:-}" ]; then
+    key_file="${BYOA_COOKIE_KEY_FILE:-/opt/alist/data/byoa_cookie.key}"
+    key_dir="$(dirname "$key_file")"
+    mkdir -p "$key_dir"
+    if [ ! -s "$key_file" ]; then
+      old_umask="$(umask)"
+      umask 077
+      if ! dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d '\r\n ' > "$key_file"; then
+        echo "Error: failed to generate BYOA cookie encryption key" >&2
+        exit 1
+      fi
+      umask "$old_umask"
+      chmod 600 "$key_file"
+    fi
+    BYOA_COOKIE_KEY="$(tr -d '\r\n ' < "$key_file")"
+    export BYOA_COOKIE_KEY
+  fi
+
   # BYOA Xiaoya 首次启动：使用官方公开数据生成丰富目录，不要求服务器私人 Token。
   if [ "${BYOA_XIAOYA_BOOTSTRAP:-true}" = "true" ] && [ -x /byoa-xiaoya-bootstrap.sh ]; then
     /byoa-xiaoya-bootstrap.sh
