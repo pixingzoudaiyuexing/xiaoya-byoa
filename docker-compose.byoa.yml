@@ -1,0 +1,21 @@
+services:
+  xiaoya-byoa:
+    build:
+      context: .
+      dockerfile: Dockerfile.byoa
+    container_name: xiaoya-byoa
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      BYOA_XIAOYA_BOOTSTRAP: "true"
+      BYOA_XIAOYA_UPDATE: if-newer
+      BYOA_XIAOYA_STRICT: "false"
+    # 默认只监听宿主机回环地址，交给 Reality/Nginx fallback 反代。
+    # 不建议把 OpenList 管理入口直接暴露到公网。
+    ports:
+      - "127.0.0.1:5244:5244"
+    volumes:
+      - xiaoya_byoa_data:/opt/alist/data
+
+volumes:
+  xiaoya_byoa_data:
