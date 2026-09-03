@@ -1,0 +1,216 @@
+package quark_uc_share
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/OpenListTeam/OpenList/v4/drivers/base"
+	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/internal/op"
+	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
+	"github.com/go-resty/resty/v2"
+	log "github.com/sirupsen/logrus"
+)
+
+// byoaDirectLink 使用当前浏览器提供的夸克 Cookie 直接对分享文件换取播放直链。
+// 该路径不使用服务器账号池、不转存文件、不使用全局播放链接缓存。
+func (d *QuarkUCShare) byoaDirectLink(ctx context.Context, file model.Obj, credential string) (*model.Link, error) {
+	parts := strings.SplitN(file.GetID(), "-", 3)
+	if len(parts) < 2 {
+		return nil, errors.New("invalid share file id: " + file.GetID())
+	}
+	fileID, fidToken := parts[0], parts[1]
+	parentID := ""
+	if len(parts) == 3 {
+		parentID = parts[2]
+	}
+
+	if d.ShareToken == "" {
+		if err := d.byoaRefreshShareToken(ctx, credential); err != nil {
+			return nil, err
+		}
+	}
+
+	body := base.Json{
+		"fids":            []string{fileID},
+		"fids_token":      []string{fidToken},
+		"pwd_id":          d.ShareId,
+		"stoken":          d.ShareToken,
+		"speedup_session": "",
+	}
+
+	requestDownload := func() (*DownResp, error) {
+		var resp DownResp
+		_, err := d.byoaRequestAt(ctx, d.pcApi(), credential, "/file/download", http.MethodPost, func(req *resty.Request) {
+			req.SetBody(body)
+		}, &resp)
+		return &resp, err
+	}
+
+	resp, err := requestDownload()
+	if err != nil && strings.Contains(err.Error(), "token校验异常") && parentID != "" {
+		if newToken, tokenErr := d.byoaGetFileToken(ctx, credential, parentID, fileID); tokenErr == nil && newToken != "" {
+			body["fids_token"] = []string{newToken}
+			resp, err = requestDownload()
+		}
+	}
+
+	if err != nil && strings.Contains(err.Error(), "st invalid") {
+		if refreshErr := d.byoaRefreshShareToken(ctx, credential); refreshErr == nil {
+			body["stoken"] = d.ShareToken
+			resp, err = requestDownload()
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || len(resp.Data) == 0 || resp.Data[0].DownloadUrl == "" {
+		// 空直链时做一次最小自愈：刷新分享 token，并在可用时刷新文件 token。
+		if refreshErr := d.byoaRefreshShareToken(ctx, credential); refreshErr == nil {
+			body["stoken"] = d.ShareToken
+			if parentID != "" {
+				if newToken, tokenErr := d.byoaGetFileToken(ctx, credential, parentID, fileID); tokenErr == nil && newToken != "" {
+					body["fids_token"] = []string{newToken}
+				}
+			}
+			resp, err = requestDownload()
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || len(resp.Data) == 0 || resp.Data[0].DownloadUrl == "" {
+		return nil, errors.New("empty share download url")
+	}
+
+	downloadURL := resp.Data[0].DownloadUrl
+	log.Infof("[BYOA][Quark] 获取免转存直链 %v %v", file.GetName(), file.GetSize())
+	return &model.Link{
+		URL: downloadURL,
+		Header: http.Header{
+			"User-Agent": []string{d.conf.ua},
+			"Referer":    []string{d.conf.referer},
+			"Cookie":     []string{credential},
+		},
+		Concurrency: 16,
+		PartSize:    512 * utils.KB,
+	}, nil
+}
+
+// byoaRefreshShareToken 使用当前浏览器 Cookie 刷新分享级 stoken。
+// stoken 属于分享本身，可以继续保存在 Storage 中；用户 Cookie 不会写入 Storage。
+func (d *QuarkUCShare) byoaRefreshShareToken(ctx context.Context, credential string) error {
+	data := base.Json{
+		"pwd_id":             d.ShareId,
+		"passcode":           d.SharePwd,
+		"share_for_transfer": true,
+	}
+	var resp ShareTokenResp
+	_, err := d.byoaRequestAt(ctx, d.pcApi(), credential, "/share/sharepage/token", http.MethodPost, func(req *resty.Request) {
+		req.SetBody(data)
+	}, &resp)
+	if err != nil {
+		return err
+	}
+	if resp.Data.ShareToken == "" {
+		if resp.Message != "" {
+			return errors.New(resp.Message)
+		}
+		return errors.New("empty share token")
+	}
+	if d.ShareToken != resp.Data.ShareToken {
+		d.ShareToken = resp.Data.ShareToken
+		op.MustSaveDriverStorage(d)
+	}
+	return nil
+}
+
+// byoaGetFileToken 用当前浏览器 Cookie 从分享目录重新取得单个文件的 fid token。
+func (d *QuarkUCShare) byoaGetFileToken(ctx context.Context, credential, parentID, fileID string) (string, error) {
+	page := 1
+	for {
+		query := map[string]string{
+			"pr":            d.conf.pr,
+			"fr":            "pc",
+			"pwd_id":        d.ShareId,
+			"stoken":        d.ShareToken,
+			"pdir_fid":      parentID,
+			"force":         "0",
+			"_page":         strconv.Itoa(page),
+			"_size":         "50",
+			"_fetch_banner": "0",
+			"_fetch_share":  "0",
+			"_fetch_total":  "1",
+			"_sort":         "file_type:asc," + d.OrderBy + ":" + d.OrderDirection,
+		}
+		var resp ListResp
+		_, err := d.byoaRequestAt(ctx, d.pcApi(), credential, "/share/sharepage/detail", http.MethodGet, func(req *resty.Request) {
+			req.SetQueryParams(query)
+		}, &resp)
+		if err != nil {
+			return "", err
+		}
+		for _, f := range resp.Data.Files {
+			if f.ID == fileID {
+				return f.FID, nil
+			}
+		}
+		if len(resp.Data.Files) == 0 || page*50 >= resp.Metadata.Total {
+			break
+		}
+		page++
+	}
+	return "", errors.New("file not found")
+}
+
+// byoaRequestAt 是 BYOA 专用请求函数。
+// 与原 requestAt 的关键区别：不会把响应里的账号 Cookie 写回包级全局状态，避免 A 浏览器污染 B 浏览器。
+func (d *QuarkUCShare) byoaRequestAt(ctx context.Context, api, credential, pathname, method string, callback base.ReqCallback, resp interface{}) ([]byte, error) {
+	u := api + pathname
+	req := base.RestyClient.R().SetContext(ctx)
+	req.SetHeaders(map[string]string{
+		"Cookie":     credential,
+		"Accept":     "application/json, text/plain, */*",
+		"User-Agent": d.conf.ua,
+		"Referer":    d.conf.referer,
+	})
+	req.SetQueryParam("pr", d.conf.pr)
+	req.SetQueryParam("entry", "ft")
+	req.SetQueryParam("fr", "pc")
+	if callback != nil {
+		callback(req)
+	}
+	if resp != nil {
+		req.SetResult(resp)
+	}
+	var apiErr Resp
+	req.SetError(&apiErr)
+
+	res, err := req.Execute(method, u)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode() == http.StatusTooManyRequests {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+		res, err = req.Execute(method, u)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if apiErr.Status >= 400 || apiErr.Code != 0 {
+		if apiErr.Message == "" {
+			return nil, errors.New("quark BYOA request failed")
+		}
+		return nil, errors.New(apiErr.Message)
+	}
+	return res.Body(), nil
+}
