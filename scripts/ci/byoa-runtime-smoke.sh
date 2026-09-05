@@ -182,6 +182,22 @@ def assert_start(provider, required):
     return data
 
 def classify_aliyun_start_failure(body):
+    error_code = str((body.get("data") or {}).get("error_code") or "")
+    structured = {
+        "aliyun_network": "network",
+        "aliyun_http_403": "upstream-http-403",
+        "aliyun_http_429": "upstream-http-429",
+        "aliyun_http_5xx": "upstream-http-5xx",
+        "aliyun_http_other": "upstream-http-other",
+        "aliyun_result_code_100": "upstream-result-100",
+        "aliyun_result_code_other": "upstream-result-other",
+        "aliyun_invalid_response": "invalid-response",
+        "aliyun_qr_encode": "qr-encode",
+    }
+    if error_code in structured:
+        return structured[error_code]
+
+    # Backward-compatible fallback for images built before structured error codes.
     message = str(body.get("message") or "")
     if "aliyun QR generate result code: 100" in message:
         return "upstream-result-100"
@@ -417,7 +433,6 @@ assert_storage_snapshot "$second_snapshot"
 second_key_hash="$(key_hash)"
 second_admin_hash="$(admin_hash)"
 second_version="$(data_version)"
-
 test "$second_snapshot" = "$first_snapshot"
 test "$second_key_hash" = "$first_key_hash"
 test "$second_admin_hash" = "$first_admin_hash"
