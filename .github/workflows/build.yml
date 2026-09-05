@@ -284,6 +284,15 @@ jobs:
 
           rm -rf build/linux
 
+      - name: Upload BYOA smoke phase diagnostic
+        if: always() && matrix.target == 'linux-amd64-musl'
+        uses: actions/upload-artifact@v7
+        with:
+          name: byoa-runtime-smoke-diagnostic
+          path: /tmp/byoa-runtime-smoke-phase.txt
+          if-no-files-found: ignore
+          retention-days: 1
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
