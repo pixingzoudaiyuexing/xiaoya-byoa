@@ -120,7 +120,7 @@ PY
 }
 
 assert_qr_protocols() {
-  BYOA_BASE_URL="$BASE_URL" python3 - <<'PY'
+  BYOA_BASE_URL="$BASE_URL" BYOA_SMOKE_PHASE_FILE="$PHASE_FILE" python3 - <<'PY'
 import json
 import os
 import time
@@ -128,6 +128,12 @@ import urllib.parse
 import urllib.request
 
 base = os.environ["BYOA_BASE_URL"]
+phase_file = os.environ["BYOA_SMOKE_PHASE_FILE"]
+
+def phase(name):
+    with open(phase_file, "w", encoding="utf-8") as handle:
+        handle.write(name + "\n")
+    print(f"=== BYOA smoke phase: {name} ===")
 
 def get_json(path, attempts=3):
     error = None
@@ -144,27 +150,32 @@ def get_json(path, attempts=3):
 
 def assert_start(provider, required):
     body = get_json(f"/api/public/byoa/{provider}/start")
-    assert body.get("code") == 200, body
+    assert body.get("code") == 200, {"provider": provider, "code": body.get("code"), "message": body.get("message")}
     data = body.get("data") or {}
     for key in required:
-        assert data.get(key), (provider, key, body)
-    assert str(data.get("qr_image", "")).startswith("data:image/png;base64,"), body
+        assert data.get(key), (provider, key, "missing")
+    assert str(data.get("qr_image", "")).startswith("data:image/png;base64,"), (provider, "qr_image", "invalid")
     print(f"{provider} QR start passed")
     return data
 
+phase("qr-quark-start")
 quark = assert_start("quark", ("token", "qr_url", "qr_image"))
 quark_query = urllib.parse.urlencode({"token": quark["token"]})
+phase("qr-quark-status")
 quark_status = get_json("/api/public/byoa/quark/status?" + quark_query)
-assert quark_status.get("code") == 200, quark_status
-assert (quark_status.get("data") or {}).get("status") in {"pending", "scanned", "expired"}, quark_status
+assert quark_status.get("code") == 200, {"provider": "quark", "operation": "status", "code": quark_status.get("code"), "message": quark_status.get("message")}
+assert (quark_status.get("data") or {}).get("status") in {"pending", "scanned", "expired"}, {"provider": "quark", "operation": "status", "status": (quark_status.get("data") or {}).get("status")}
 print("quark QR status poll passed:", (quark_status.get("data") or {}).get("status"))
 
+phase("qr-aliyun-start")
 aliyun = assert_start("aliyun", ("ck", "t", "qr_url", "qr_image"))
 aliyun_query = urllib.parse.urlencode({"ck": aliyun["ck"], "t": aliyun["t"]})
+phase("qr-aliyun-status")
 aliyun_status = get_json("/api/public/byoa/aliyun/status?" + aliyun_query)
-assert aliyun_status.get("code") == 200, aliyun_status
-assert (aliyun_status.get("data") or {}).get("status") in {"pending", "scanned", "expired", "canceled"}, aliyun_status
+assert aliyun_status.get("code") == 200, {"provider": "aliyun", "operation": "status", "code": aliyun_status.get("code"), "message": aliyun_status.get("message")}
+assert (aliyun_status.get("data") or {}).get("status") in {"pending", "scanned", "expired", "canceled"}, {"provider": "aliyun", "operation": "status", "status": (aliyun_status.get("data") or {}).get("status")}
 print("aliyun QR status poll passed:", (aliyun_status.get("data") or {}).get("status"))
+phase("first-qr-protocols-complete")
 PY
 }
 
