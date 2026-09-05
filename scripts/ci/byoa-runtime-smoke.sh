@@ -6,6 +6,12 @@ PORT="${BYOA_SMOKE_PORT:-15244}"
 VOLUME="xiaoya-byoa-ci-data-${GITHUB_RUN_ID:-$$}-${GITHUB_RUN_ATTEMPT:-0}"
 CONTAINER="xiaoya-byoa-ci"
 BASE_URL="http://127.0.0.1:${PORT}"
+PHASE_FILE="${BYOA_SMOKE_PHASE_FILE:-/tmp/byoa-runtime-smoke-phase.txt}"
+
+set_phase() {
+  printf '%s\n' "$1" > "$PHASE_FILE"
+  printf '=== BYOA smoke phase: %s ===\n' "$1"
+}
 
 cleanup() {
   docker logs "$CONTAINER" 2>/dev/null || true
@@ -289,23 +295,37 @@ assert_missing_auth("quark", quark_file)
 PY
 }
 
+set_phase first-start
 echo '=== First normal start from an empty data volume ==='
 start_container if-newer
+
+set_phase first-storage-snapshot
 first_snapshot="$(storage_snapshot)"
 assert_storage_snapshot "$first_snapshot"
+
+set_phase first-persistent-state
 first_key_hash="$(key_hash)"
 first_admin_hash="$(admin_hash)"
 first_version="$(data_version)"
 [[ "$first_version" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
 echo "Xiaoya data version: ${first_version}"
 echo "BYOA key hash (first start): ${first_key_hash}"
+
+set_phase first-guest-catalog
 assert_guest_catalog
+
+set_phase first-qr-protocols
 assert_qr_protocols
+
+set_phase first-provider-browse-auth
 assert_anonymous_provider_browse_and_auth
 
+set_phase restart-start
 echo '=== Recreate container with the same persistent data volume ==='
 docker rm -f "$CONTAINER" >/dev/null
 start_container if-newer
+
+set_phase restart-persistence
 second_snapshot="$(storage_snapshot)"
 assert_storage_snapshot "$second_snapshot"
 second_key_hash="$(key_hash)"
@@ -316,12 +336,19 @@ test "$second_snapshot" = "$first_snapshot"
 test "$second_key_hash" = "$first_key_hash"
 test "$second_admin_hash" = "$first_admin_hash"
 test "$second_version" = "$first_version"
+
+set_phase restart-guest-catalog
 assert_guest_catalog
 
+set_phase refresh-mark-old-version
 echo '=== Force an old content version and verify safe refresh ==='
 sql "create table if not exists byoa_state (key text primary key, value text not null); insert or replace into byoa_state (key,value) values ('xiaoya_data_version','0.0.0');"
 docker rm -f "$CONTAINER" >/dev/null
+
+set_phase refresh-start
 start_container if-newer
+
+set_phase refresh-persistence
 refresh_snapshot="$(storage_snapshot)"
 assert_storage_snapshot "$refresh_snapshot"
 refresh_key_hash="$(key_hash)"
@@ -332,11 +359,14 @@ refresh_version="$(data_version)"
 test "$refresh_version" != "0.0.0"
 test "$refresh_key_hash" = "$first_key_hash"
 test "$refresh_admin_hash" = "$first_admin_hash"
+
+set_phase refresh-guest-catalog
 assert_guest_catalog
 
 echo "Xiaoya data version after forced refresh: ${refresh_version}"
 echo 'BYOA first-start, QR, persistence and content-refresh smoke passed'
 
+set_phase complete
 docker rm -f "$CONTAINER" >/dev/null
 trap - EXIT
 docker volume rm -f "$VOLUME" >/dev/null
