@@ -88,22 +88,22 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 		SetResult(&result).
 		Get(aliyunQRGenerateEndpoint)
 	if err != nil {
-		return nil, err
+		return nil, newAliyunQRStartNetworkError()
 	}
 	if resp.IsError() {
-		return nil, fmt.Errorf("aliyun QR generate http status: %d", resp.StatusCode())
+		return nil, newAliyunQRStartHTTPError(resp.StatusCode())
 	}
 	data := result.Content.Data
 	if data.CodeContent == "" || data.CK == "" || data.T == "" {
 		// 只暴露上游数字结果码用于诊断，绝不把响应正文、ck/t 或二维码内容写入错误。
 		if data.ResultCode != 0 {
-			return nil, fmt.Errorf("aliyun QR generate result code: %d", data.ResultCode)
+			return nil, newAliyunQRStartResultError(data.ResultCode)
 		}
-		return nil, errors.New("invalid aliyun QR response")
+		return nil, newAliyunQRStartInvalidResponseError()
 	}
 	image, err := qrDataURI(data.CodeContent)
 	if err != nil {
-		return nil, err
+		return nil, newAliyunQRStartQREncodeError()
 	}
 	return &AliyunQRStart{
 		CK:      data.CK,
