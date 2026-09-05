@@ -5,7 +5,7 @@
 # - 只保留 MVP 所需的阿里云盘 + 夸克公开分享目录；
 # - 把旧 AliyundriveShare 系列统一切换为支持浏览器 BYOA 的 AliyunShare；
 # - 删除服务端账号型驱动与历史私人凭据字段；
-# - 只继承 Xiaoya 内容数据库，不继承 legacy runtime config，让 OpenList v4 自行生成兼容配置；
+# - 只继承 Xiaoya 内容数据库；legacy runtime config 只隔离一次，之后保留 OpenList v4 自己的配置；
 # - 将 Xiaoya 内容版本写入持久化 data.db。
 #
 # 所有关键失败都显式处理，避免 Alpine / BusyBox shell 因复合命令状态静默退出。
@@ -16,6 +16,7 @@ CONFIG_PATH="${DATA_DIR}/config.json"
 XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoyaDev/data/main}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 VERSION_TMP="/tmp/byoa-xiaoya-version.$$"
+CONFIG_MIGRATION_KEY="openlist_v4_config_migrated"
 
 log() {
   printf '[BYOA Xiaoya] %s\n' "$*"
@@ -62,23 +63,49 @@ if [ ! -s "$DB_PATH" ]; then
   exit 0
 fi
 
-# BYOA 的迁移边界是“继承 Xiaoya 内容数据库”，而不是继承 Xiaoya/Alist v3 的
-# runtime config。legacy config 既可能含未展开的 ALIST_* 占位符，也可能包含
-# OpenList v4 已改变类型或语义的字段，并且还可能携带旧 jwt_secret 等敏感状态。
-# 因此只要 seed 带有 config.json 就无条件丢弃，让 v4 在同一持久化 data 目录
-# 生成干净、当前版本兼容的配置。绝不输出 legacy config 内容。
-if [ -e "$CONFIG_PATH" ]; then
-  if rm -f "$CONFIG_PATH"; then
-    log "已隔离 Xiaoya legacy runtime config；OpenList v4 将生成兼容配置"
-  else
-    warn "无法移除 Xiaoya legacy runtime config"
-    exit 1
-  fi
-fi
-
 if ! command -v sqlite3 >/dev/null 2>&1; then
   warn "运行时缺少 sqlite3，无法归一化 Xiaoya 数据库"
   exit 1
+fi
+
+# BYOA 的迁移边界是“继承 Xiaoya 内容数据库”，而不是继承 Xiaoya/Alist v3 的
+# runtime config。首次归一化时隔离 seed 携带的 legacy config，让 OpenList v4
+# 生成当前版本兼容配置；迁移标记落在同一持久化 DB 中，后续重启必须保留 v4
+# 自己生成的 config.json。绝不输出 legacy/v4 config 内容。
+if ! sqlite3 "$DB_PATH" <<'SQL'
+CREATE TABLE IF NOT EXISTS byoa_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+SQL
+then
+  warn "无法初始化 BYOA 状态表"
+  exit 1
+fi
+
+config_migrated="$(sql_scalar "SELECT value FROM byoa_state WHERE key='${CONFIG_MIGRATION_KEY}' LIMIT 1;" || true)"
+if [ "$config_migrated" != "1" ]; then
+  if [ -e "$CONFIG_PATH" ]; then
+    if rm -f "$CONFIG_PATH"; then
+      log "已一次性隔离 Xiaoya legacy runtime config；OpenList v4 将生成兼容配置"
+    else
+      warn "无法移除 Xiaoya legacy runtime config"
+      exit 1
+    fi
+  else
+    log "未发现 Xiaoya legacy runtime config；记录 v4 配置迁移完成"
+  fi
+
+  if ! sqlite3 "$DB_PATH" <<SQL
+INSERT OR REPLACE INTO byoa_state (key, value)
+VALUES ('${CONFIG_MIGRATION_KEY}', '1');
+SQL
+  then
+    warn "写入 OpenList v4 配置迁移标记失败"
+    exit 1
+  fi
+else
+  log "OpenList v4 配置迁移已完成；保留当前 runtime config"
 fi
 
 log "检查 Xiaoya 数据库基础表"
@@ -189,10 +216,6 @@ log "版本解析完成：value=${version:-empty} source=${version_source:-none}
 
 if [ -n "$version" ] && valid_version "$version"; then
   if sqlite3 "$DB_PATH" <<SQL
-CREATE TABLE IF NOT EXISTS byoa_state (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
 INSERT OR REPLACE INTO byoa_state (key, value)
 VALUES ('xiaoya_data_version', '$version');
 SQL
