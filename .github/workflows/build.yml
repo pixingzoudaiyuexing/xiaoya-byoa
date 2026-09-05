@@ -100,7 +100,7 @@ jobs:
             exit 1
           fi
 
-      - name: Smoke first start and persistent Xiaoya BYOA runtime
+      - name: Prepare amd64 runtime image
         if: matrix.target == 'linux-amd64-musl'
         run: |
           set -e
@@ -119,6 +119,10 @@ jobs:
             printf "/opt/alist/data -> "; readlink -f /opt/alist/data 2>/dev/null || true
           '
 
+      - name: Probe fresh OpenList runtime
+        if: matrix.target == 'linux-amd64-musl'
+        run: |
+          set -e
           probe_openlist() {
             probe_name="$1"
             shift
@@ -144,12 +148,25 @@ jobs:
           echo '=== Probe OpenList against a completely fresh data directory ==='
           fresh_plain=0
           fresh_no_prefix=0
-          probe_openlist byoa-probe-fresh-plain server --data /tmp/openlist-fresh --debug --log-std || fresh_plain=$?
-          probe_openlist byoa-probe-fresh-noprefix server --data /tmp/openlist-fresh --debug --log-std --no-prefix || fresh_no_prefix=$?
+          probe_openlist byoa-probe-fresh-plain server --data /tmp/openlist-fresh-plain --debug --log-std || fresh_plain=$?
+          probe_openlist byoa-probe-fresh-noprefix server --data /tmp/openlist-fresh-noprefix --debug --log-std --no-prefix || fresh_no_prefix=$?
           echo "Fresh probe rc: plain=${fresh_plain} no-prefix=${fresh_no_prefix}"
+          if [ "$fresh_plain" -ne 0 ] || [ "$fresh_no_prefix" -ne 0 ]; then
+            echo "Fresh OpenList runtime probe failed: plain=${fresh_plain} no-prefix=${fresh_no_prefix}" >&2
+            exit 1
+          fi
 
-          echo '=== Prepare Xiaoya-normalized data without starting entrypoint server ==='
+      - name: Probe Xiaoya-normalized OpenList runtime
+        if: matrix.target == 'linux-amd64-musl'
+        run: |
+          set -e
           diag_volume="xiaoya-byoa-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f byoa-probe-xiaoya >/dev/null 2>&1 || true
+            docker volume rm -f "$diag_volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
           docker volume create "$diag_volume" >/dev/null
           docker run --rm \
             --entrypoint sh \
@@ -159,7 +176,6 @@ jobs:
             xiaoya-byoa:ci \
             -c '/byoa-xiaoya-bootstrap.sh && /byoa-xiaoya-normalize.sh'
 
-          docker rm -f byoa-probe-xiaoya >/dev/null 2>&1 || true
           docker run -d \
             --name byoa-probe-xiaoya \
             --entrypoint /opt/alist/alist \
@@ -171,17 +187,15 @@ jobs:
           docker inspect -f 'Running={{.State.Running}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Error={{.State.Error}}' byoa-probe-xiaoya || true
           echo '=== byoa-probe-xiaoya logs ==='
           docker logs byoa-probe-xiaoya 2>&1 || true
-          xiaoya_probe_running="$(docker inspect -f '{{.State.Running}}' byoa-probe-xiaoya 2>/dev/null || true)"
-          docker rm -f byoa-probe-xiaoya >/dev/null 2>&1 || true
-          docker volume rm -f "$diag_volume" >/dev/null 2>&1 || true
-
-          if [ "$fresh_plain" -ne 0 ] || [ "$fresh_no_prefix" -ne 0 ] || [ "$xiaoya_probe_running" != "true" ]; then
-            echo "Startup probe failed: plain=${fresh_plain} no-prefix=${fresh_no_prefix} xiaoya_running=${xiaoya_probe_running}" >&2
+          if [ "$(docker inspect -f '{{.State.Running}}' byoa-probe-xiaoya 2>/dev/null || true)" != "true" ]; then
+            echo 'Xiaoya-normalized OpenList runtime probe failed' >&2
             exit 1
           fi
 
-          # 诊断容器为何在 OpenList server 启动阶段整体退出。
-          # docker events 会在容器被 smoke cleanup 删除后仍保留本轮 die/oom/kill 事件。
+      - name: Smoke persistent Xiaoya BYOA runtime
+        if: matrix.target == 'linux-amd64-musl'
+        run: |
+          set -e
           : > /tmp/byoa-docker-events.log
           docker events \
             --filter 'container=xiaoya-byoa-ci' \
