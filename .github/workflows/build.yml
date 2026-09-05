@@ -188,6 +188,11 @@ jobs:
               ls -l /opt/alist/data/data.db
               sqlite3 /opt/alist/data/data.db "PRAGMA integrity_check; PRAGMA user_version; SELECT name FROM sqlite_master WHERE type=\"table\" ORDER BY name;"
               /byoa-xiaoya-normalize.sh
+              if [ -e /opt/alist/data/config.json ]; then
+                echo "Legacy Xiaoya runtime config survived normalization" >&2
+                exit 1
+              fi
+              echo "Legacy Xiaoya runtime config isolation verified"
               echo "=== Xiaoya DB metadata after normalize ==="
               ls -l /opt/alist/data/data.db
               sqlite3 /opt/alist/data/data.db "PRAGMA integrity_check; PRAGMA user_version; SELECT name FROM sqlite_master WHERE type=\"table\" ORDER BY name;"
