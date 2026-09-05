@@ -206,15 +206,44 @@ jobs:
             xiaoya-byoa:ci \
             server --data /opt/alist/data --debug --log-std --no-prefix >/dev/null
           sleep 3
+
           echo '=== byoa-probe-xiaoya state ==='
           docker inspect -f 'Running={{.State.Running}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Error={{.State.Error}}' byoa-probe-xiaoya || true
-          echo '=== byoa-probe-xiaoya logs ==='
-          docker logs byoa-probe-xiaoya 2>&1 || true
+
+          # Capture only schema and migration/error diagnostics. Never persist raw runtime logs.
+          {
+            echo '=== SQLite schema metadata (DDL only; no row values) ==='
+            docker run --rm \
+              --entrypoint sqlite3 \
+              -v "$diag_volume:/opt/alist/data" \
+              xiaoya-byoa:ci \
+              /opt/alist/data/data.db \
+              "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;" || true
+            echo '=== Filtered OpenList startup diagnostics ==='
+            docker logs byoa-probe-xiaoya 2>&1 \
+              | grep -Ei 'migrat|sqlite|database|table|column|constraint|duplicate|no such|error|fail|alter|create|panic|fatal' \
+              | sed -E \
+                  -e 's/(access[_-]?token|refresh[_-]?token|authorization|bearer|cookie|credential|password|secret)([=: ]+)[^ ,;\"]+/\1\2[REDACTED]/Ig' \
+                  -e 's/[A-Za-z0-9_\/.+-]{48,}/[REDACTED_LONG_VALUE]/g' \
+              || true
+          } > /tmp/openlist-migration-diagnostic.txt
+
+          cat /tmp/openlist-migration-diagnostic.txt
+
           if [ "$(docker inspect -f '{{.State.Running}}' byoa-probe-xiaoya 2>/dev/null || true)" != "true" ]; then
             echo 'Xiaoya OpenList startup probe failed' >&2
             exit 1
           fi
           docker rm -f byoa-probe-xiaoya >/dev/null
+
+      - name: Upload sanitized migration diagnostic
+        if: always() && matrix.target == 'linux-amd64-musl'
+        uses: actions/upload-artifact@v7
+        with:
+          name: openlist-migration-diagnostic
+          path: /tmp/openlist-migration-diagnostic.txt
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Cleanup Xiaoya diagnostic volume
         if: always() && matrix.target == 'linux-amd64-musl'
