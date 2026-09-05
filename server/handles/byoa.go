@@ -108,6 +108,20 @@ func BYOAQuarkStatus(c *gin.Context) {
 	common.SuccessResp(c, status)
 }
 
+func respondAliyunQRStartError(c *gin.Context, err error) bool {
+	errorCode, ok := byoa.AliyunQRStartErrorCode(err)
+	if !ok {
+		return false
+	}
+	responseCode := 502
+	if errorCode == byoa.AliyunQRStartErrorNetwork {
+		// 本机到阿里上游的 transport 故障与有效 HTTP 上游错误分开，便于 CI/前端稳定判断。
+		responseCode = 503
+	}
+	common.ErrorWithDataResp(c, err, responseCode, gin.H{"error_code": errorCode})
+	return true
+}
+
 // BYOAAliyunStart 创建阿里云盘普通账号扫码二维码。
 // ck/t 由浏览器持有，服务端不创建 Session。
 func BYOAAliyunStart(c *gin.Context) {
@@ -116,7 +130,9 @@ func BYOAAliyunStart(c *gin.Context) {
 	}
 	result, err := byoa.StartAliyunQR(c.Request.Context())
 	if err != nil {
-		common.ErrorResp(c, err, 502)
+		if !respondAliyunQRStartError(c, err) {
+			common.ErrorResp(c, err, 502)
+		}
 		return
 	}
 	common.SuccessResp(c, result)
