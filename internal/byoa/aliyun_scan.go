@@ -34,6 +34,7 @@ type AliyunQRStatus struct {
 type aliyunGenerateResp struct {
 	Content struct {
 		Data struct {
+			ResultCode  int    `json:"resultCode"`
 			CodeContent string `json:"codeContent"`
 			CK          string `json:"ck"`
 			T           string `json:"t"`
@@ -94,6 +95,10 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	}
 	data := result.Content.Data
 	if data.CodeContent == "" || data.CK == "" || data.T == "" {
+		// 只暴露上游数字结果码用于诊断，绝不把响应正文、ck/t 或二维码内容写入错误。
+		if data.ResultCode != 0 {
+			return nil, fmt.Errorf("aliyun QR generate result code: %d", data.ResultCode)
+		}
 		return nil, errors.New("invalid aliyun QR response")
 	}
 	image, err := qrDataURI(data.CodeContent)
@@ -108,7 +113,7 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	}, nil
 }
 
-// CheckAliyunQR 查询一次阿里云盘扫码状态。
+// CheckAliyunQR 查询一次扫码状态。
 // 成功后只把短期 Access Token 返回给服务端 handler 写入 HttpOnly Cookie；
 // Refresh Token 只在当前函数内用于换取 Access Token，不持久化。
 func CheckAliyunQR(ctx context.Context, ck, t string) (status *AliyunQRStatus, accessToken string, err error) {
