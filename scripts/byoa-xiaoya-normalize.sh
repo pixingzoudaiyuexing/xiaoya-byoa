@@ -5,7 +5,7 @@
 # - 只保留 MVP 所需的阿里云盘 + 夸克公开分享目录；
 # - 把旧 AliyundriveShare 系列统一切换为支持浏览器 BYOA 的 AliyunShare；
 # - 删除服务端账号型驱动与历史私人凭据字段；
-# - 丢弃带 Xiaoya ALIST_* 占位符的旧 config.json，让 OpenList v4 自行生成兼容配置；
+# - 只继承 Xiaoya 内容数据库，不继承 legacy runtime config，让 OpenList v4 自行生成兼容配置；
 # - 将 Xiaoya 内容版本写入持久化 data.db。
 #
 # 所有关键失败都显式处理，避免 Alpine / BusyBox shell 因复合命令状态静默退出。
@@ -62,16 +62,16 @@ if [ ! -s "$DB_PATH" ]; then
   exit 0
 fi
 
-# Xiaoya seed 中的 config.json 可能包含未展开的 ALIST_* shell 占位符。
-# OpenList v4 使用严格 JSON 解析，遇到这类值会在连接数据库前直接退出。
-# BYOA 不依赖 Xiaoya 的运行时配置；只在确认存在 legacy 占位符时删除该文件，
-# 让 OpenList v4 在同一持久化 data 目录生成自己的兼容配置。
-# 不输出 config 内容，避免 jwt_secret 或其他敏感字段进入日志。
-if [ -s "$CONFIG_PATH" ] && grep -Eq 'ALIST_[A-Z0-9_]+' "$CONFIG_PATH"; then
+# BYOA 的迁移边界是“继承 Xiaoya 内容数据库”，而不是继承 Xiaoya/Alist v3 的
+# runtime config。legacy config 既可能含未展开的 ALIST_* 占位符，也可能包含
+# OpenList v4 已改变类型或语义的字段，并且还可能携带旧 jwt_secret 等敏感状态。
+# 因此只要 seed 带有 config.json 就无条件丢弃，让 v4 在同一持久化 data 目录
+# 生成干净、当前版本兼容的配置。绝不输出 legacy config 内容。
+if [ -e "$CONFIG_PATH" ]; then
   if rm -f "$CONFIG_PATH"; then
-    log "已移除不兼容的 Xiaoya legacy config；OpenList v4 将生成兼容配置"
+    log "已隔离 Xiaoya legacy runtime config；OpenList v4 将生成兼容配置"
   else
-    warn "无法移除不兼容的 Xiaoya legacy config"
+    warn "无法移除 Xiaoya legacy runtime config"
     exit 1
   fi
 fi
