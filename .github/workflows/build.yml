@@ -156,17 +156,12 @@ jobs:
             exit 1
           fi
 
-      - name: Probe Xiaoya-normalized OpenList runtime
+      - name: Bootstrap Xiaoya runtime fixture
         if: matrix.target == 'linux-amd64-musl'
         run: |
           set -e
           diag_volume="xiaoya-byoa-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          cleanup() {
-            docker rm -f byoa-probe-xiaoya >/dev/null 2>&1 || true
-            docker volume rm -f "$diag_volume" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-
+          docker volume rm -f "$diag_volume" >/dev/null 2>&1 || true
           docker volume create "$diag_volume" >/dev/null
           docker run --rm \
             --entrypoint sh \
@@ -174,8 +169,36 @@ jobs:
             -e BYOA_XIAOYA_UPDATE=if-newer \
             -v "$diag_volume:/opt/alist/data" \
             xiaoya-byoa:ci \
-            -c '/byoa-xiaoya-bootstrap.sh && /byoa-xiaoya-normalize.sh'
+            -c '/byoa-xiaoya-bootstrap.sh'
 
+      - name: Normalize Xiaoya runtime fixture
+        if: matrix.target == 'linux-amd64-musl'
+        run: |
+          set -e
+          diag_volume="xiaoya-byoa-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --rm \
+            --entrypoint sh \
+            -e BYOA_XIAOYA_STRICT=true \
+            -v "$diag_volume:/opt/alist/data" \
+            xiaoya-byoa:ci \
+            -c '
+              set -e
+              echo "=== Xiaoya DB metadata before normalize ==="
+              ls -ld /opt/alist/data
+              ls -l /opt/alist/data/data.db
+              sqlite3 /opt/alist/data/data.db "PRAGMA integrity_check; PRAGMA user_version; SELECT name FROM sqlite_master WHERE type=\"table\" ORDER BY name;"
+              /byoa-xiaoya-normalize.sh
+              echo "=== Xiaoya DB metadata after normalize ==="
+              ls -l /opt/alist/data/data.db
+              sqlite3 /opt/alist/data/data.db "PRAGMA integrity_check; PRAGMA user_version; SELECT name FROM sqlite_master WHERE type=\"table\" ORDER BY name;"
+            '
+
+      - name: Probe Xiaoya OpenList startup
+        if: matrix.target == 'linux-amd64-musl'
+        run: |
+          set -e
+          diag_volume="xiaoya-byoa-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker rm -f byoa-probe-xiaoya >/dev/null 2>&1 || true
           docker run -d \
             --name byoa-probe-xiaoya \
             --entrypoint /opt/alist/alist \
@@ -188,9 +211,16 @@ jobs:
           echo '=== byoa-probe-xiaoya logs ==='
           docker logs byoa-probe-xiaoya 2>&1 || true
           if [ "$(docker inspect -f '{{.State.Running}}' byoa-probe-xiaoya 2>/dev/null || true)" != "true" ]; then
-            echo 'Xiaoya-normalized OpenList runtime probe failed' >&2
+            echo 'Xiaoya OpenList startup probe failed' >&2
             exit 1
           fi
+          docker rm -f byoa-probe-xiaoya >/dev/null
+
+      - name: Cleanup Xiaoya diagnostic volume
+        if: always() && matrix.target == 'linux-amd64-musl'
+        run: |
+          docker rm -f byoa-probe-xiaoya >/dev/null 2>&1 || true
+          docker volume rm -f "xiaoya-byoa-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
 
       - name: Smoke persistent Xiaoya BYOA runtime
         if: matrix.target == 'linux-amd64-musl'
