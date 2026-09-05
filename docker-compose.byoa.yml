@@ -10,10 +10,10 @@ services:
       BYOA_XIAOYA_BOOTSTRAP: "true"
       BYOA_XIAOYA_UPDATE: if-newer
       BYOA_XIAOYA_STRICT: "false"
-    # 默认只监听宿主机回环地址，交给 Reality/Nginx fallback 反代。
-    # 不建议把 OpenList 管理入口直接暴露到公网。
+    # 测试阶段直接暴露 5244 到公网，方便浏览器扫码与播放验收。
+    # 正式接入 Reality/Nginx fallback 后再收回到 127.0.0.1。
     ports:
-      - "127.0.0.1:5244:5244"
+      - "5244:5244"
     volumes:
       - xiaoya_byoa_data:/opt/alist/data
 
