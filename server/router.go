@@ -101,6 +101,13 @@ func Init(e *gin.Engine) {
 	public.Any("/settings", handles.PublicSettings)
 	public.Any("/offline_download_tools", handles.OfflineDownloadTools)
 	public.Any("/archive_extensions", handles.ArchiveExtensions)
+	byoaQRStartLimit := middlewares.BYOAQRStartRateLimit()
+	byoaQRStatusLimit := middlewares.BYOAQRStatusRateLimit()
+	public.GET("/byoa/quark/start", byoaQRStartLimit, handles.BYOAQuarkStart)
+	public.GET("/byoa/quark/status", byoaQRStatusLimit, handles.BYOAQuarkStatus)
+	public.GET("/byoa/aliyun/start", byoaQRStartLimit, handles.BYOAAliyunStart)
+	public.GET("/byoa/aliyun/status", byoaQRStatusLimit, handles.BYOAAliyunStatus)
+	public.POST("/byoa/clear", handles.BYOAClear)
 
 	_fs(auth.Group("/fs"))
 	_index115(auth.Group("/index115"))

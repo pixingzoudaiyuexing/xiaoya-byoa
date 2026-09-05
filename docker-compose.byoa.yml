@@ -1,0 +1,21 @@
+services:
+  xiaoya-byoa:
+    build:
+      context: .
+      dockerfile: Dockerfile.byoa
+    container_name: xiaoya-byoa
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      BYOA_XIAOYA_BOOTSTRAP: "true"
+      BYOA_XIAOYA_UPDATE: if-newer
+      BYOA_XIAOYA_STRICT: "false"
+    # 测试阶段直接暴露 5244 到公网，方便浏览器扫码与播放验收。
+    # 正式接入 Reality/Nginx fallback 后再收回到 127.0.0.1。
+    ports:
+      - "5244:5244"
+    volumes:
+      - xiaoya_byoa_data:/opt/alist/data
+
+volumes:
+  xiaoya_byoa_data:
