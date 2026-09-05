@@ -101,6 +101,13 @@ data_version() {
   sql "select value from byoa_state where key='xiaoya_data_version' limit 1;"
 }
 
+assert_config_migration_state() {
+  local state
+  state="$(sql "select value from byoa_state where key='openlist_v4_config_migrated' limit 1;")"
+  test "$state" = "1"
+  echo 'OpenList v4 config migration marker: 1'
+}
+
 assert_guest_catalog() {
   local guest_body
   guest_body="$(curl -fsS \
@@ -123,7 +130,9 @@ assert_qr_protocols() {
   BYOA_BASE_URL="$BASE_URL" BYOA_SMOKE_PHASE_FILE="$PHASE_FILE" python3 - <<'PY'
 import json
 import os
+import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -141,16 +150,30 @@ def get_json(path, attempts=3):
         try:
             request = urllib.request.Request(base + path, method="GET")
             with urllib.request.urlopen(request, timeout=20) as response:
-                return json.loads(response.read().decode("utf-8"))
+                body = json.loads(response.read().decode("utf-8"))
+                body["_http_status"] = response.status
+                return body
+        except urllib.error.HTTPError as exc:
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+                body["_http_status"] = exc.code
+                return body
+            except Exception:
+                error = RuntimeError(f"local BYOA endpoint returned non-JSON HTTP {exc.code}")
         except Exception as exc:
             error = exc
-            if attempt + 1 < attempts:
-                time.sleep(1)
+        if attempt + 1 < attempts:
+            time.sleep(1)
     raise error
 
 def assert_start(provider, required):
     body = get_json(f"/api/public/byoa/{provider}/start")
-    assert body.get("code") == 200, {"provider": provider, "code": body.get("code"), "message": body.get("message")}
+    assert body.get("code") == 200, {
+        "provider": provider,
+        "operation": "start",
+        "code": body.get("code"),
+        "http_status": body.get("_http_status"),
+    }
     data = body.get("data") or {}
     for key in required:
         assert data.get(key), (provider, key, "missing")
@@ -158,22 +181,73 @@ def assert_start(provider, required):
     print(f"{provider} QR start passed")
     return data
 
+def classify_aliyun_start_failure(body):
+    message = str(body.get("message") or "")
+    if "aliyun QR generate result code: 100" in message:
+        return "upstream-result-100"
+    match = re.search(r"aliyun QR generate http status: ([0-9]{3})", message)
+    if match:
+        status = int(match.group(1))
+        if status == 403:
+            return "upstream-http-403"
+        if status == 429:
+            return "upstream-http-429"
+        if 500 <= status <= 599:
+            return "upstream-http-5xx"
+        return "upstream-http-other"
+    if "invalid aliyun QR response" in message:
+        return "invalid-response"
+    return "other"
+
 phase("qr-quark-start")
 quark = assert_start("quark", ("token", "qr_url", "qr_image"))
 quark_query = urllib.parse.urlencode({"token": quark["token"]})
 phase("qr-quark-status")
 quark_status = get_json("/api/public/byoa/quark/status?" + quark_query)
-assert quark_status.get("code") == 200, {"provider": "quark", "operation": "status", "code": quark_status.get("code"), "message": quark_status.get("message")}
-assert (quark_status.get("data") or {}).get("status") in {"pending", "scanned", "expired"}, {"provider": "quark", "operation": "status", "status": (quark_status.get("data") or {}).get("status")}
+assert quark_status.get("code") == 200, {
+    "provider": "quark",
+    "operation": "status",
+    "code": quark_status.get("code"),
+    "http_status": quark_status.get("_http_status"),
+}
+assert (quark_status.get("data") or {}).get("status") in {"pending", "scanned", "expired"}, {
+    "provider": "quark",
+    "operation": "status",
+    "status": (quark_status.get("data") or {}).get("status"),
+}
 print("quark QR status poll passed:", (quark_status.get("data") or {}).get("status"))
 
 phase("qr-aliyun-start")
-aliyun = assert_start("aliyun", ("ck", "t", "qr_url", "qr_image"))
+aliyun_body = get_json("/api/public/byoa/aliyun/start")
+if aliyun_body.get("code") != 200:
+    classification = classify_aliyun_start_failure(aliyun_body)
+    phase("qr-aliyun-start-" + classification)
+    raise AssertionError({
+        "provider": "aliyun",
+        "operation": "start",
+        "classification": classification,
+        "code": aliyun_body.get("code"),
+        "http_status": aliyun_body.get("_http_status"),
+    })
+aliyun = aliyun_body.get("data") or {}
+for key in ("ck", "t", "qr_url", "qr_image"):
+    assert aliyun.get(key), ("aliyun", key, "missing")
+assert str(aliyun.get("qr_image", "")).startswith("data:image/png;base64,"), ("aliyun", "qr_image", "invalid")
+print("aliyun QR start passed")
 aliyun_query = urllib.parse.urlencode({"ck": aliyun["ck"], "t": aliyun["t"]})
 phase("qr-aliyun-status")
 aliyun_status = get_json("/api/public/byoa/aliyun/status?" + aliyun_query)
-assert aliyun_status.get("code") == 200, {"provider": "aliyun", "operation": "status", "code": aliyun_status.get("code"), "message": aliyun_status.get("message")}
-assert (aliyun_status.get("data") or {}).get("status") in {"pending", "scanned", "expired", "canceled"}, {"provider": "aliyun", "operation": "status", "status": (aliyun_status.get("data") or {}).get("status")}
+assert aliyun_status.get("code") == 200, {
+    "provider": "aliyun",
+    "operation": "status",
+    "code": aliyun_status.get("code"),
+    "http_status": aliyun_status.get("_http_status"),
+}
+assert (aliyun_status.get("data") or {}).get("status") in {"pending", "scanned", "expired", "canceled"}, {
+    "provider": "aliyun",
+    "operation": "status",
+    "status": (aliyun_status.get("data") or {}).get("status"),
+}
 print("aliyun QR status poll passed:", (aliyun_status.get("data") or {}).get("status"))
 phase("first-qr-protocols-complete")
 PY
@@ -319,6 +393,7 @@ first_key_hash="$(key_hash)"
 first_admin_hash="$(admin_hash)"
 first_version="$(data_version)"
 [[ "$first_version" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
+assert_config_migration_state
 echo "Xiaoya data version: ${first_version}"
 echo "BYOA key hash (first start): ${first_key_hash}"
 
@@ -347,6 +422,7 @@ test "$second_snapshot" = "$first_snapshot"
 test "$second_key_hash" = "$first_key_hash"
 test "$second_admin_hash" = "$first_admin_hash"
 test "$second_version" = "$first_version"
+assert_config_migration_state
 
 set_phase restart-guest-catalog
 assert_guest_catalog
@@ -370,6 +446,7 @@ refresh_version="$(data_version)"
 test "$refresh_version" != "0.0.0"
 test "$refresh_key_hash" = "$first_key_hash"
 test "$refresh_admin_hash" = "$first_admin_hash"
+assert_config_migration_state
 
 set_phase refresh-guest-catalog
 assert_guest_catalog
