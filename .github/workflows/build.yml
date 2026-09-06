@@ -68,10 +68,30 @@ jobs:
           go-version: "1.26.4"
 
       - name: Setup web
-        run: bash build.sh dev web
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FRONTEND_REPO: ${{ vars.FRONTEND_REPO }}
+        run: |
+          set -euo pipefail
+          frontend_version="4.2.5"
+          frontend_tag="v${frontend_version}"
+          frontend_asset="openlist-frontend-dist-${frontend_tag}.tar.gz"
+          frontend_url="https://github.com/OpenListTeam/OpenList-Frontend/releases/download/${frontend_tag}/${frontend_asset}"
+          frontend_sha256="78e957e5b8855e30d00767458ab90ec11125a0344a238cc1e1990f46553d4308"
+
+          rm -f /tmp/byoa-frontend.tar.gz
+          curl -fL \
+            --retry 4 \
+            --retry-all-errors \
+            --retry-delay 2 \
+            --connect-timeout 15 \
+            --max-time 180 \
+            "$frontend_url" \
+            -o /tmp/byoa-frontend.tar.gz
+
+          echo "${frontend_sha256}  /tmp/byoa-frontend.tar.gz" | sha256sum -c -
+          rm -rf public/dist
+          mkdir -p public/dist
+          tar -xzf /tmp/byoa-frontend.tar.gz -C public/dist
+          rm -f /tmp/byoa-frontend.tar.gz
+          test -f public/dist/index.html
 
       - name: Build
         uses: OpenListTeam/cgo-actions@v1.2.5
