@@ -53,8 +53,8 @@ func Init(e *gin.Engine) {
 	g.GET("/ad/*path", middlewares.PathParse, archiveSignCheck, downloadLimiter, handles.ArchiveDown)
 	g.GET("/ap/*path", middlewares.PathParse, archiveSignCheck, downloadLimiter, handles.ArchiveProxy)
 	g.GET("/ae/*path", middlewares.PathParse, archiveSignCheck, downloadLimiter, handles.ArchiveInternalExtract)
-	g.HEAD("/ad/*path", middlewares.PathParse, archiveSignCheck, handles.ArchiveDown)
-	g.HEAD("/ap/*path", middlewares.PathParse, archiveSignCheck, handles.ArchiveProxy)
+	g.HEAD("/ad/*path", middlewares.PathParse, archiveSignCheck, handles.Down)
+	g.HEAD("/ap/*path", middlewares.PathParse, archiveSignCheck, handles.Proxy)
 	g.HEAD("/ae/*path", middlewares.PathParse, archiveSignCheck, handles.ArchiveInternalExtract)
 
 	g.GET("/sd/:sid", middlewares.EmptyPathParse, middlewares.SharingIdParse, downloadLimiter, handles.SharingDown)
@@ -142,7 +142,7 @@ func admin(g *gin.RouterGroup) {
 	user.POST("/cancel_2fa", handles.Cancel2FAById)
 	user.POST("/delete", handles.DeleteUser)
 	user.POST("/del_cache", handles.DelUserCache)
-	user.GET("/sshkey/list", handles.ListPublicKey)
+	user.GET("/sshkey/list", handles.ListPublicKeys)
 	user.POST("/sshkey/delete", handles.DeletePublicKey)
 
 	storage := g.Group("/storage")
@@ -158,7 +158,7 @@ func admin(g *gin.RouterGroup) {
 	driver := g.Group("/driver")
 	driver.GET("/list", handles.ListDriverInfo)
 	driver.GET("/names", handles.ListDriverNames)
-	driver.GET("/info", handles.GetDriverInfo)
+	driver.GET("/info", handles.ListDriverInfo)
 
 	setting := g.Group("/setting")
 	setting.GET("/get", handles.GetSetting)
@@ -192,7 +192,7 @@ func admin(g *gin.RouterGroup) {
 	index.POST("/update", middlewares.SearchIndex, handles.UpdateIndex)
 	index.POST("/stop", middlewares.SearchIndex, handles.StopIndex)
 	index.POST("/clear", middlewares.SearchIndex, handles.ClearIndex)
-	index.GET("/progress", middlewares.SearchIndex, handles.GetProgress)
+	index.GET("/progress", handles.GetManualScanProgress)
 
 	i115 := g.Group("/index115")
 	i115.POST("/reload", handles.Index115Reload)
@@ -232,7 +232,7 @@ func _fs(g *gin.RouterGroup) {
 	g.POST("/batch_rename", handles.FsBatchRename)
 	g.POST("/regex_rename", handles.FsRegexRename)
 	g.POST("/move", handles.FsMove)
-	g.POST("/recursive_move", handles.FsRecursiveMove)
+	g.POST("/recursive_move", handles.FsMove)
 	g.POST("/copy", handles.FsCopy)
 	g.POST("/remove", handles.FsRemove)
 	g.POST("/remove_empty_directory", handles.FsRemoveEmptyDirectory)
