@@ -21,7 +21,10 @@ type tlsDialResult struct {
 //
 // 普通 net.Dialer 只会在 TCP 建连阶段选择地址；如果某个 IPv4 已经 TCP 连接成功、但 TLS 握手卡住，
 // Go 不会自动换到同一域名的其它 IPv4。该 Transport 会并行错峰尝试所有 IPv4，首个完成 TLS 握手的连接胜出。
-// 这用于部分阿里边缘节点在特定 VPS 网络路径上出现 TLS handshake timeout 的兼容场景。
+//
+// Go 1.24+ 默认启用 ML-KEM 混合后量子密钥交换，Go 1.26 又新增了更多默认 ML-KEM 曲线；
+// 某些服务端或中间设备无法正确处理更大的 ClientHello，会表现为 TLS handshake timeout。
+// 阿里兼容链路显式使用传统 X25519 / P-256 / P-384，避免这种兼容性问题。
 func NewIPv4TLSFallbackTransport(tlsConfig *tls.Config, perAttemptTimeout time.Duration, forceHTTP1 bool) *http.Transport {
 	if perAttemptTimeout <= 0 {
 		perAttemptTimeout = 4 * time.Second
@@ -32,6 +35,16 @@ func NewIPv4TLSFallbackTransport(tlsConfig *tls.Config, perAttemptTimeout time.D
 		transport.TLSClientConfig = tlsConfig.Clone()
 	} else if transport.TLSClientConfig != nil {
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	if len(transport.TLSClientConfig.CurvePreferences) == 0 {
+		transport.TLSClientConfig.CurvePreferences = []tls.CurveID{
+			tls.X25519,
+			tls.CurveP256,
+			tls.CurveP384,
+		}
 	}
 
 	if forceHTTP1 {
