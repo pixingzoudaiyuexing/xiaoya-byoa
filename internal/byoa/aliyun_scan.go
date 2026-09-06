@@ -131,13 +131,12 @@ func aliyunBrowserHeaders() map[string]string {
 // ck/t 直接交由浏览器持有，服务端不维护扫码 Session。
 func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	client := newAliyunHTTPClient()
-	var result aliyunGenerateResp
 	var resp *resty.Response
 	var err error
 
-	// 只对 transport 失败做一次短重试；有效 HTTP/WAF 响应绝不重试，保留明确错误分类。
+	// 这里只重试真正的 transport 失败。Resty 的 SetResult 会把 JSON 解码错误也混入 err，
+	// 因此扫码生成请求先取得原始 HTTP 响应，再在 transport/HTTP 分类之后显式解码 JSON。
 	for attempt := 0; attempt < 2; attempt++ {
-		result = aliyunGenerateResp{}
 		resp, err = client.R().
 			SetContext(ctx).
 			SetHeaders(aliyunBrowserHeaders()).
@@ -151,7 +150,6 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 				"bizParams":   "",
 				"_bx-v":       "2.0.31",
 			}).
-			SetResult(&result).
 			Get(aliyunQRGenerateEndpoint)
 		if err == nil {
 			break
@@ -172,6 +170,13 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	if resp.IsError() {
 		return nil, newAliyunQRStartHTTPError(resp.StatusCode())
 	}
+
+	var result aliyunGenerateResp
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+		// 响应正文可能包含敏感或不可控内容，不写日志、不包装底层解码错误。
+		return nil, newAliyunQRStartInvalidResponseError()
+	}
+
 	data := result.Content.Data
 	if data.CodeContent == "" || data.CK == "" || data.T == "" {
 		// 只暴露上游数字结果码用于诊断，绝不把响应正文、ck/t 或二维码内容写入错误。
