@@ -1,85 +1,51 @@
 package handles
 
 import (
-	"sync"
-	"time"
+	"net/http"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/server/common"
 	"github.com/gin-gonic/gin"
-	"golang.org/x/time/rate"
 )
 
-type byoaRateEntry struct {
-	limiter  *rate.Limiter
-	lastSeen time.Time
+type byoaQuarkStatusReq struct {
+	Token string `json:"token"`
 }
 
-type byoaIPRateLimiter struct {
-	mu        sync.Mutex
-	entries   map[string]*byoaRateEntry
-	rate      rate.Limit
-	burst     int
-	lastSweep time.Time
+type byoaAliyunStatusReq struct {
+	CK string `json:"ck"`
+	T  string `json:"t"`
 }
 
-func newBYOAIPRateLimiter(r rate.Limit, burst int) *byoaIPRateLimiter {
-	return &byoaIPRateLimiter{
-		entries:   make(map[string]*byoaRateEntry),
-		rate:      r,
-		burst:     burst,
-		lastSweep: time.Now(),
+func quarkStatusToken(c *gin.Context) (string, bool) {
+	if c.Request.Method != http.MethodPost {
+		// 临时兼容旧 CI/缓存前端；正式访客脚本只使用 POST JSON，避免 token 进入 URL/access log。
+		return c.Query("token"), true
 	}
+	var req byoaQuarkStatusReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ErrorResp(c, err, 400)
+		return "", false
+	}
+	return req.Token, true
 }
 
-func (l *byoaIPRateLimiter) allow(ip string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if now.Sub(l.lastSweep) >= 5*time.Minute || len(l.entries) > 10000 {
-		cutoff := now.Add(-10 * time.Minute)
-		for key, entry := range l.entries {
-			if entry.lastSeen.Before(cutoff) {
-				delete(l.entries, key)
-			}
-		}
-		l.lastSweep = now
+func aliyunStatusParams(c *gin.Context) (ck, t string, ok bool) {
+	if c.Request.Method != http.MethodPost {
+		// 临时兼容旧 CI/缓存前端；正式访客脚本只使用 POST JSON，避免 ck/t 进入 URL/access log。
+		return c.Query("ck"), c.Query("t"), true
 	}
-
-	entry := l.entries[ip]
-	if entry == nil {
-		entry = &byoaRateEntry{limiter: rate.NewLimiter(l.rate, l.burst)}
-		l.entries[ip] = entry
+	var req byoaAliyunStatusReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ErrorResp(c, err, 400)
+		return "", "", false
 	}
-	entry.lastSeen = now
-	return entry.limiter.AllowN(now, 1)
-}
-
-var (
-	// 创建二维码访问第三方登录服务，限制更严格：持续约 1 次/秒，burst 5。
-	byoaQRStartLimiter = newBYOAIPRateLimiter(rate.Every(time.Second), 5)
-	// 前端默认每 2 秒轮询一次，状态接口允许持续约 5 次/秒，burst 20。
-	byoaQRStatusLimiter = newBYOAIPRateLimiter(rate.Every(200*time.Millisecond), 20)
-)
-
-func allowBYOAQR(c *gin.Context, limiter *byoaIPRateLimiter) bool {
-	ip := c.ClientIP()
-	if ip == "" {
-		ip = "unknown"
-	}
-	if limiter.allow(ip, time.Now()) {
-		return true
-	}
-	common.ErrorStrResp(c, "扫码请求过于频繁，请稍后重试", 429)
-	return false
+	return req.CK, req.T, true
 }
 
 // BYOAQuarkStart 创建夸克扫码二维码。
 // token 由浏览器持有，服务端不创建 Session。
 func BYOAQuarkStart(c *gin.Context) {
-	if !allowBYOAQR(c, byoaQRStartLimiter) {
-		return
-	}
 	result, err := byoa.StartQuarkQR(c.Request.Context())
 	if err != nil {
 		common.ErrorResp(c, err, 502)
@@ -91,10 +57,11 @@ func BYOAQuarkStart(c *gin.Context) {
 // BYOAQuarkStatus 查询一次扫码状态。
 // 扫码成功后凭据只写入当前浏览器 HttpOnly Cookie，不返回给 JavaScript。
 func BYOAQuarkStatus(c *gin.Context) {
-	if !allowBYOAQR(c, byoaQRStatusLimiter) {
+	token, ok := quarkStatusToken(c)
+	if !ok {
 		return
 	}
-	status, credential, err := byoa.CheckQuarkQR(c.Request.Context(), c.Query("token"))
+	status, credential, err := byoa.CheckQuarkQR(c.Request.Context(), token)
 	if err != nil {
 		common.ErrorResp(c, err, 502)
 		return
@@ -125,9 +92,6 @@ func respondAliyunQRStartError(c *gin.Context, err error) bool {
 // BYOAAliyunStart 创建阿里云盘普通账号扫码二维码。
 // ck/t 由浏览器持有，服务端不创建 Session。
 func BYOAAliyunStart(c *gin.Context) {
-	if !allowBYOAQR(c, byoaQRStartLimiter) {
-		return
-	}
 	result, err := byoa.StartAliyunQR(c.Request.Context())
 	if err != nil {
 		if !respondAliyunQRStartError(c, err) {
@@ -142,10 +106,11 @@ func BYOAAliyunStart(c *gin.Context) {
 // 扫码成功后仅把短期 Access Token 写入当前浏览器 HttpOnly Cookie；
 // 普通 Refresh Token 不持久化，也不返回给前端。
 func BYOAAliyunStatus(c *gin.Context) {
-	if !allowBYOAQR(c, byoaQRStatusLimiter) {
+	ck, t, ok := aliyunStatusParams(c)
+	if !ok {
 		return
 	}
-	status, accessToken, err := byoa.CheckAliyunQR(c.Request.Context(), c.Query("ck"), c.Query("t"))
+	status, accessToken, err := byoa.CheckAliyunQR(c.Request.Context(), ck, t)
 	if err != nil {
 		common.ErrorResp(c, err, 502)
 		return
