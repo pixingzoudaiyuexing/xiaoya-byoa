@@ -104,8 +104,11 @@ func Init(e *gin.Engine) {
 	byoaQRStartLimit := middlewares.BYOAQRStartRateLimit()
 	byoaQRStatusLimit := middlewares.BYOAQRStatusRateLimit()
 	public.GET("/byoa/quark/start", byoaQRStartLimit, handles.BYOAQuarkStart)
-	public.GET("/byoa/quark/status", byoaQRStatusLimit, handles.BYOAQuarkStatus)
+	public.POST("/byoa/quark/status", byoaQRStatusLimit, handles.BYOAQuarkStatus)
 	public.GET("/byoa/aliyun/start", byoaQRStartLimit, handles.BYOAAliyunStart)
+	public.POST("/byoa/aliyun/status", byoaQRStatusLimit, handles.BYOAAliyunStatus)
+	// 临时兼容旧 CI 和可能被浏览器缓存的旧访客脚本；新脚本绝不把扫码参数放入 URL。
+	public.GET("/byoa/quark/status", byoaQRStatusLimit, handles.BYOAQuarkStatus)
 	public.GET("/byoa/aliyun/status", byoaQRStatusLimit, handles.BYOAAliyunStatus)
 	public.POST("/byoa/clear", handles.BYOAClear)
 
@@ -139,7 +142,7 @@ func admin(g *gin.RouterGroup) {
 	user.POST("/cancel_2fa", handles.Cancel2FAById)
 	user.POST("/delete", handles.DeleteUser)
 	user.POST("/del_cache", handles.DelUserCache)
-	user.GET("/sshkey/list", handles.ListPublicKeys)
+	user.GET("/sshkey/list", handles.ListPublicKey)
 	user.POST("/sshkey/delete", handles.DeletePublicKey)
 
 	storage := g.Group("/storage")
