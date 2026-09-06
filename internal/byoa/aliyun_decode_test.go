@@ -27,4 +27,32 @@ func TestAliyunQRStartMalformedJSONIsInvalidResponse(t *testing.T) {
 	if code != AliyunQRStartErrorInvalidResponse {
 		t.Fatalf("error code = %q, want %q", code, AliyunQRStartErrorInvalidResponse)
 	}
+	responseClass, ok := AliyunQRStartResponseClass(err)
+	if !ok {
+		t.Fatal("expected safe response class")
+	}
+	if responseClass != "json-decode" {
+		t.Fatalf("response class = %q, want json-decode", responseClass)
+	}
+}
+
+func TestClassifyAliyunInvalidResponseBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{name: "empty", body: []byte("  \n"), want: "empty"},
+		{name: "html", body: []byte("<!doctype html><html></html>"), want: "html"},
+		{name: "json", body: []byte(`{"broken":`), want: "json-decode"},
+		{name: "text", body: []byte("upstream challenge"), want: "text"},
+		{name: "binary", body: []byte{0xff, 0xfe, 0xfd}, want: "binary"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyAliyunInvalidResponseBody(tt.body); got != tt.want {
+				t.Fatalf("class = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
