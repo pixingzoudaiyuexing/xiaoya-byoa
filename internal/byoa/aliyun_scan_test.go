@@ -10,7 +10,11 @@ import (
 )
 
 func TestAliyunQRGenerateResultCodeIsSafe(t *testing.T) {
+	var seenUserAgent, seenReferer, seenAppName string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenUserAgent = r.Header.Get("User-Agent")
+		seenReferer = r.Header.Get("Referer")
+		seenAppName = r.URL.Query().Get("appName")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"content":{"data":{"resultCode":100,"codeContent":"","ck":"","t":"","titleMsg":"sensitive-upstream-message"}}}`))
 	}))
@@ -29,6 +33,15 @@ func TestAliyunQRGenerateResultCodeIsSafe(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "sensitive-upstream-message") {
 		t.Fatal("upstream response message leaked into error")
+	}
+	if seenAppName != "aliyun_drive" {
+		t.Fatalf("appName = %q, want aliyun_drive", seenAppName)
+	}
+	if !strings.Contains(seenUserAgent, "Mozilla/5.0") {
+		t.Fatalf("User-Agent = %q, want browser-like UA", seenUserAgent)
+	}
+	if seenReferer != aliyunBrowserReferer {
+		t.Fatalf("Referer = %q, want %q", seenReferer, aliyunBrowserReferer)
 	}
 }
 
