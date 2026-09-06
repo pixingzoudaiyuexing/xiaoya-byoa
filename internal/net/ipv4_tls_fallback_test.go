@@ -6,6 +6,7 @@ import (
 	stdnet "net"
 	"net/http/httptest"
 	"net/netip"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -38,6 +39,15 @@ func TestDialTLSIPv4CandidatesFallsBackAfterBadAddress(t *testing.T) {
 		t.Fatalf("expected fallback TLS connection to succeed: %v", err)
 	}
 	defer conn.Close()
+}
+
+func TestIPv4TLSFallbackDisablesDefaultMLKEMCurves(t *testing.T) {
+	transport := NewIPv4TLSFallbackTransport(nil, time.Second, true)
+	got := transport.TLSClientConfig.CurvePreferences
+	want := []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected curve preferences: got=%v want=%v", got, want)
+	}
 }
 
 func TestLookupIPv4CandidatesRejectsIPv6Literal(t *testing.T) {
