@@ -90,12 +90,18 @@ func respondAliyunQRStartError(c *gin.Context, err error) bool {
 			data["transport_class"] = transportClass
 		}
 	}
+	if errorCode == byoa.AliyunQRStartErrorInvalidResponse {
+		if responseClass, ok := byoa.AliyunQRStartResponseClass(err); ok {
+			// 只返回响应的大类标签，不返回正文、URL、Content-Type 原文或任何凭据。
+			data["response_class"] = responseClass
+		}
+	}
 	common.ErrorWithDataResp(c, err, responseCode, data)
 	return true
 }
 
 // BYOAAliyunStart 创建阿里云盘普通账号扫码二维码。
-// ck/t 由浏览器持有，服务端不创建 Session。
+// ck/t 由浏览器持有，服务端不创建扫码 Session。
 func BYOAAliyunStart(c *gin.Context) {
 	result, err := byoa.StartAliyunQR(c.Request.Context())
 	if err != nil {
