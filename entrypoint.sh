@@ -72,6 +72,20 @@ if [ "$normalize_status" -ne 0 ]; then
   exit 1
 fi
 
+# Xiaoya seed 默认开启 README 自动渲染，访客首页会额外请求隐藏的 /README.md。
+# BYOA 伪装站不需要该行为；在 OpenList 初始化设置缓存前持久化关闭，避免首页底部 /p/README.md 500。
+if command -v sqlite3 >/dev/null 2>&1 && [ -s /opt/alist/data/data.db ]; then
+  setting_table="$(sqlite3 /opt/alist/data/data.db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='x_setting_items';" 2>/dev/null | tr -d '\r\n ')"
+  if [ "$setting_table" = "1" ]; then
+    if sqlite3 /opt/alist/data/data.db "UPDATE x_setting_items SET value='false' WHERE key='readme_autorender';"; then
+      echo "[BYOA entrypoint] disabled README autorender"
+    else
+      echo "Error: failed to disable README autorender" >&2
+      exit 1
+    fi
+  fi
+fi
+
 # Check file of /opt/alist/data permissions for current user
 # 检查当前用户是否有当前目录的写和执行权限
 if [ -d ./data ]; then
