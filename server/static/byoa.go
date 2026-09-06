@@ -10,6 +10,7 @@ import "strings"
 // - 不读取网盘凭据；凭据由后端写入 HttpOnly Cookie。
 // - 不引入用户系统、Redis 或服务端 Session。
 // - 同时兼容 XHR 与 fetch，避免前端升级后扫码入口失效。
+// - 扫码状态参数只放 POST JSON body，不进入 URL/access log。
 // - 只注入访客页面，不注入管理后台。
 const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
 (function () {
@@ -42,6 +43,14 @@ const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
         throw new Error((body && body.message) || "请求失败");
       }
       return body.data;
+    });
+  }
+
+  function postJSON(url, data) {
+    return requestJSON(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data || {})
     });
   }
 
@@ -128,14 +137,14 @@ const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
 
   function poll(provider, apiRoot, session) {
     if (!active || active.provider !== provider) return;
-    var query;
+    var payload;
     if (provider === "quark") {
-      query = "token=" + encodeURIComponent(session.token || "");
+      payload = { token: session.token || "" };
     } else {
-      query = "ck=" + encodeURIComponent(session.ck || "") + "&t=" + encodeURIComponent(session.t || "");
+      payload = { ck: session.ck || "", t: session.t || "" };
     }
-    var url = apiRoot + "/api/public/byoa/" + provider + "/status?" + query;
-    requestJSON(url).then(function (data) {
+    var url = apiRoot + "/api/public/byoa/" + provider + "/status";
+    postJSON(url, payload).then(function (data) {
       if (!active || active.provider !== provider) return;
       var status = data && data.status;
       if (status === "success") {
