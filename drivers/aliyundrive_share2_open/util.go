@@ -205,7 +205,7 @@ func (d *AliyundriveShare2Open) deleteDelay(ali *aliyundrive_open.AliyundriveOpe
 
 	log.Infof("[%v] Delete aliyun temp file %v after %v seconds.", ali.ID, fileId, delayTime)
 	time.Sleep(time.Duration(delayTime) * time.Second)
-	d.deleteOpen(ali, file.GetID())
+	d.deleteOpen(ali, fileId)
 }
 
 func (d *AliyundriveShare2Open) deleteOpen(ali *aliyundrive_open.AliyundriveOpen, fileId string) {
@@ -314,6 +314,7 @@ func (d *AliyundriveShare2Open) saveTo115(ctx context.Context, pan115 *_115.Pan1
 	if ok, err := pan115.UploadAvailable(); err != nil || !ok {
 		return link, err
 	}
+	log.Debugf("save file to 115 cloud: file=%v dir=%v", file.GetID(), pan115.TempDirId)
 	fs := &stream.FileStream{
 		Obj: file,
 		Ctx: ctx,
