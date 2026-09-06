@@ -1,11 +1,8 @@
 package base
 
 import (
-	"context"
 	"crypto/tls"
-	stdnet "net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
@@ -14,17 +11,16 @@ import (
 )
 
 var (
-	NoRedirectClient *resty.Client
-	RestyClient      *resty.Client
-	HttpClient       *http.Client
+	NoRedirectClient  *resty.Client
+	RestyClient       *resty.Client
+	AliyunRestyClient *resty.Client
+	HttpClient        *http.Client
 )
 
 var DefaultTimeout = time.Second * 30
 
 const UserAgent = "Mozilla/5.0 (Macintosh; Apple macOS 26_1_0) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/142.0.0.0 OpenList/425.6.30"
 const UserAgentNT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/142.0.0.0 OpenList/425.6.30"
-
-const alipanAPIHost = "api.alipan.com"
 
 func InitClient() {
 	NoRedirectClient = resty.New().SetRedirectPolicy(
@@ -36,22 +32,13 @@ func InitClient() {
 	internalnet.SetRestyProxyIfConfigured(NoRedirectClient)
 
 	RestyClient = NewRestyClient()
+	AliyunRestyClient = NewAliyunRestyClient()
 	HttpClient = internalnet.NewHttpClient()
 }
 
 func NewRestyClient() *resty.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: conf.Conf.TlsInsecureSkipVerify}
-	dialer := &stdnet.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-	transport.DialContext = func(ctx context.Context, network, address string) (stdnet.Conn, error) {
-		return dialer.DialContext(ctx, outboundNetwork(network, address), address)
-	}
-
 	client := resty.New().
-		SetTransport(transport).
+		SetTLSClientConfig(&tls.Config{InsecureSkipVerify: conf.Conf.TlsInsecureSkipVerify}).
 		SetHeader("user-agent", UserAgent).
 		SetRetryCount(3).
 		SetRetryResetReaders(true).
@@ -61,13 +48,29 @@ func NewRestyClient() *resty.Client {
 	return client
 }
 
-// outboundNetwork 只对阿里公开分享 API 固定 IPv4。
-// 部分 VPS 能解析 api.alipan.com 的 AAAA，但 IPv6 TLS 握手不可用；若默认客户端先选中 IPv6，
-// 会等到 TLS handshake timeout，导致目录浏览非常慢。其它目标继续保持 Go 默认双栈行为。
-func outboundNetwork(network, address string) string {
-	host, _, err := stdnet.SplitHostPort(address)
-	if err == nil && strings.EqualFold(host, alipanAPIHost) {
-		return "tcp4"
+// NewAliyunRestyClient 仅用于阿里公开分享 API。
+// 某些 VPS 到阿里边缘节点存在“TCP 已连接但 TLS 握手超时”的路径问题；仅固定 tcp4 仍会黏在坏 IPv4 上。
+// 这里在多个 IPv4 A 记录之间做 TLS 级 fallback，并使用 HTTP/1.1，避免影响其他网盘驱动。
+func NewAliyunRestyClient() *resty.Client {
+	transport := internalnet.NewIPv4TLSFallbackTransport(
+		&tls.Config{InsecureSkipVerify: conf.Conf.TlsInsecureSkipVerify},
+		4*time.Second,
+		true,
+	)
+	transport.ResponseHeaderTimeout = 8 * time.Second
+
+	client := resty.New().
+		SetTransport(transport).
+		SetHeader("user-agent", UserAgent).
+		SetTimeout(DefaultTimeout)
+	internalnet.SetRestyProxyIfConfigured(client)
+	return client
+}
+
+// GetAliyunRestyClient 允许单测在未执行 InitClient 时安全取得专用客户端。
+func GetAliyunRestyClient() *resty.Client {
+	if AliyunRestyClient != nil {
+		return AliyunRestyClient
 	}
-	return network
+	return NewAliyunRestyClient()
 }
