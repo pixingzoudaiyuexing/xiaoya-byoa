@@ -36,7 +36,7 @@ func (d *AliyundriveShare2Open) byoaDirectLink(ctx context.Context, file model.O
 		}
 		var resp ShareLinkResp
 		var apiErr ErrorResp
-		req := base.RestyClient.R().
+		req := base.GetAliyunRestyClient().R().
 			SetContext(ctx).
 			SetError(&apiErr).
 			SetHeader("content-type", "application/json").
