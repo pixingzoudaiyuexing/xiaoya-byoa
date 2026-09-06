@@ -156,17 +156,18 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 		if err == nil {
 			break
 		}
-		log.Warnf("[BYOA][Aliyun] QR generate transport failure class=%s attempt=%d", classifyAliyunTransportError(err), attempt+1)
+		transportClass := classifyAliyunTransportError(err)
+		log.Warnf("[BYOA][Aliyun] QR generate transport failure class=%s attempt=%d", transportClass, attempt+1)
 		if attempt == 0 {
 			select {
 			case <-ctx.Done():
-				return nil, newAliyunQRStartNetworkError()
+				return nil, newAliyunQRStartNetworkError(transportClass)
 			case <-time.After(250 * time.Millisecond):
 			}
 		}
 	}
 	if err != nil {
-		return nil, newAliyunQRStartNetworkError()
+		return nil, newAliyunQRStartNetworkError(classifyAliyunTransportError(err))
 	}
 	if resp.IsError() {
 		return nil, newAliyunQRStartHTTPError(resp.StatusCode())
