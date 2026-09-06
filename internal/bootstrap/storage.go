@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"context"
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/setting"
@@ -53,7 +55,22 @@ func validateStorages() {
 	syncStatus(3)
 }
 
+func byoaRuntimeEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BYOA_XIAOYA_BOOTSTRAP"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func syncStatus(code int) {
+	// BYOA 独立运行时不包含 alist-tvbox 的 4567 控制服务。
+	// 仅跳过遗留状态回调；存储加载和 validateStorages 仍照常执行。
+	if byoaRuntimeEnabled() {
+		return
+	}
+
 	url := "http://127.0.0.1:4567/api/alist/status?code=" + strconv.Itoa(code)
 	_, err := base.RestyClient.R().
 		SetHeader("X-API-KEY", setting.GetStr("atv_api_key")).
