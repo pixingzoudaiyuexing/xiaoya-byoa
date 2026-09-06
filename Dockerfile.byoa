@@ -13,7 +13,8 @@ LABEL org.opencontainers.image.description="Tokenless Xiaoya catalog with browse
 
 WORKDIR /opt/alist/
 
-COPY --from=builder --chmod=755 /app/bin/openlist ./alist
+# build.sh release docker 的 BuildDocker() 固定输出 ./bin/alist。
+COPY --from=builder --chmod=755 /app/bin/alist ./alist
 COPY --chmod=755 scripts/byoa-xiaoya-bootstrap.sh /byoa-xiaoya-bootstrap.sh
 COPY --chmod=755 scripts/byoa-xiaoya-normalize.sh /byoa-xiaoya-normalize.sh
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
