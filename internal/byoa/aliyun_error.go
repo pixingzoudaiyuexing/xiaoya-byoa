@@ -3,6 +3,8 @@ package byoa
 import (
 	"errors"
 	"fmt"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -84,10 +86,12 @@ func newAliyunQRStartResultError(resultCode int) error {
 }
 
 func newAliyunQRStartInvalidResponseError(responseClass string) error {
+	responseClass = sanitizeAliyunResponseClass(responseClass)
+	log.Warnf("[BYOA][Aliyun] QR generate invalid response class=%s", responseClass)
 	return &aliyunQRStartError{
 		code:          AliyunQRStartErrorInvalidResponse,
 		message:       "invalid aliyun QR response",
-		responseClass: sanitizeAliyunResponseClass(responseClass),
+		responseClass: responseClass,
 	}
 }
 
