@@ -21,6 +21,7 @@ type aliyunQRStartError struct {
 	code           string
 	message        string
 	transportClass string
+	responseClass  string
 }
 
 func (e *aliyunQRStartError) Error() string {
@@ -30,6 +31,15 @@ func (e *aliyunQRStartError) Error() string {
 func sanitizeAliyunTransportClass(class string) string {
 	switch class {
 	case "timeout", "dns", "eof", "tls", "reset", "refused", "other":
+		return class
+	default:
+		return "other"
+	}
+}
+
+func sanitizeAliyunResponseClass(class string) string {
+	switch class {
+	case "empty", "html", "json-decode", "json-shape", "text", "binary", "other":
 		return class
 	default:
 		return "other"
@@ -73,10 +83,11 @@ func newAliyunQRStartResultError(resultCode int) error {
 	}
 }
 
-func newAliyunQRStartInvalidResponseError() error {
+func newAliyunQRStartInvalidResponseError(responseClass string) error {
 	return &aliyunQRStartError{
-		code:    AliyunQRStartErrorInvalidResponse,
-		message: "invalid aliyun QR response",
+		code:          AliyunQRStartErrorInvalidResponse,
+		message:       "invalid aliyun QR response",
+		responseClass: sanitizeAliyunResponseClass(responseClass),
 	}
 }
 
@@ -105,4 +116,14 @@ func AliyunQRStartTransportClass(err error) (string, bool) {
 		return "", false
 	}
 	return sanitizeAliyunTransportClass(target.transportClass), true
+}
+
+// AliyunQRStartResponseClass 只为 invalid_response 返回固定 allowlist 响应类型。
+// 只描述响应的大类，不返回 Content-Type 原文、正文、长度、URL 或任何凭据。
+func AliyunQRStartResponseClass(err error) (string, bool) {
+	var target *aliyunQRStartError
+	if !errors.As(err, &target) || target.code != AliyunQRStartErrorInvalidResponse || target.responseClass == "" {
+		return "", false
+	}
+	return sanitizeAliyunResponseClass(target.responseClass), true
 }
