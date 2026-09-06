@@ -1,6 +1,7 @@
 package byoa
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	internalnet "github.com/OpenListTeam/OpenList/v4/internal/net"
 	"github.com/go-resty/resty/v2"
@@ -118,6 +120,26 @@ func classifyAliyunTransportError(err error) string {
 	}
 }
 
+// classifyAliyunInvalidResponseBody 只根据响应字节的大类返回固定标签。
+// 不记录或返回正文、Content-Type 原文、URL、长度或任何凭据。
+func classifyAliyunInvalidResponseBody(body []byte) string {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return "empty"
+	}
+	lower := bytes.ToLower(trimmed)
+	if bytes.HasPrefix(lower, []byte("<!doctype html")) || bytes.HasPrefix(lower, []byte("<html")) {
+		return "html"
+	}
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		return "json-decode"
+	}
+	if utf8.Valid(trimmed) {
+		return "text"
+	}
+	return "binary"
+}
+
 func aliyunBrowserHeaders() map[string]string {
 	return map[string]string{
 		"User-Agent":      aliyunBrowserUserAgent,
@@ -174,7 +196,7 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	var result aliyunGenerateResp
 	if err := json.Unmarshal(resp.Body(), &result); err != nil {
 		// 响应正文可能包含敏感或不可控内容，不写日志、不包装底层解码错误。
-		return nil, newAliyunQRStartInvalidResponseError()
+		return nil, newAliyunQRStartInvalidResponseError(classifyAliyunInvalidResponseBody(resp.Body()))
 	}
 
 	data := result.Content.Data
@@ -183,7 +205,7 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 		if data.ResultCode != 0 {
 			return nil, newAliyunQRStartResultError(data.ResultCode)
 		}
-		return nil, newAliyunQRStartInvalidResponseError()
+		return nil, newAliyunQRStartInvalidResponseError("json-shape")
 	}
 	image, err := qrDataURI(data.CodeContent)
 	if err != nil {
