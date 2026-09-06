@@ -72,7 +72,7 @@ func (d *AliyundriveShare2Open) getShareToken() error {
 	}
 	var e ErrorResp
 	var resp ShareTokenResp
-	_, err := base.RestyClient.R().
+	_, err := base.GetAliyunRestyClient().R().
 		SetResult(&resp).SetError(&e).SetBody(data).
 		Post("https://api.alipan.com/v2/share_link/get_share_token")
 	if err != nil {
@@ -205,7 +205,7 @@ func (d *AliyundriveShare2Open) deleteDelay(ali *aliyundrive_open.AliyundriveOpe
 
 	log.Infof("[%v] Delete aliyun temp file %v after %v seconds.", ali.ID, fileId, delayTime)
 	time.Sleep(time.Duration(delayTime) * time.Second)
-	d.deleteOpen(ali, fileId)
+	d.deleteOpen(ali, file.GetID())
 }
 
 func (d *AliyundriveShare2Open) deleteOpen(ali *aliyundrive_open.AliyundriveOpen, fileId string) {
@@ -223,7 +223,7 @@ func (d *AliyundriveShare2Open) deleteOpen(ali *aliyundrive_open.AliyundriveOpen
 
 func (d *AliyundriveShare2Open) request(ali *aliyundrive_open.AliyundriveOpen, url, method string, callback base.ReqCallback) ([]byte, error) {
 	var e ErrorResp
-	req := base.RestyClient.R().
+	req := base.GetAliyunRestyClient().R().
 		SetError(&e).
 		SetHeader("content-type", "application/json").
 		SetHeader("Referer", "https://www.alipan.com/").
@@ -274,7 +274,7 @@ func (d *AliyundriveShare2Open) getFiles(fileId string) ([]File, error) {
 	for {
 		var e ErrorResp
 		var resp ListResp
-		res, err := base.RestyClient.R().
+		res, err := base.GetAliyunRestyClient().R().
 			SetHeader("x-share-token", d.ShareToken).
 			SetHeader(CanaryHeaderKey, CanaryHeaderValue).
 			SetResult(&resp).SetError(&e).SetBody(data).
@@ -314,7 +314,6 @@ func (d *AliyundriveShare2Open) saveTo115(ctx context.Context, pan115 *_115.Pan1
 	if ok, err := pan115.UploadAvailable(); err != nil || !ok {
 		return link, err
 	}
-	log.Debugf("save file to 115 cloud: file=%v dir=%v", file.GetID(), pan115.TempDirId)
 	fs := &stream.FileStream{
 		Obj: file,
 		Ctx: ctx,
