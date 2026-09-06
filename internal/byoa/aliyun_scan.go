@@ -2,16 +2,19 @@ package byoa
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -76,9 +79,8 @@ func newBYOAHTTPClient() *resty.Client {
 }
 
 // newAliyunHTTPClient 只影响阿里账号授权链路。
-// 某些 VPS 会解析出阿里 IPv6 地址，但实际没有可用的 IPv6 出口；Go 默认双栈拨号在这些环境里
-// 可能把阿里扫码请求归类成 transport error。基于默认 Transport 克隆，仅固定 tcp4，保留 HTTP/2、
-// ProxyFromEnvironment、连接池、TLS 等默认行为。
+// 真实 VPS 已验证阿里 IPv4 可用而 IPv6 不可达；另外对扫码登录使用 HTTP/1.1，避免部分阿里边缘节点
+// 与 Go HTTP/2 客户端组合出现长时间 transport timeout。该限制不影响 Quark、OpenList 其他驱动或播放链路。
 func newAliyunHTTPClient() *resty.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	dialer := &net.Dialer{
@@ -88,7 +90,43 @@ func newAliyunHTTPClient() *resty.Client {
 	transport.DialContext = func(ctx context.Context, _ string, address string) (net.Conn, error) {
 		return dialer.DialContext(ctx, "tcp4", address)
 	}
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	transport.TLSHandshakeTimeout = 8 * time.Second
+	transport.ResponseHeaderTimeout = 8 * time.Second
 	return resty.New().SetTransport(transport).SetTimeout(byoaUpstreamTimeout)
+}
+
+// classifyAliyunTransportError 只返回固定类别，禁止把底层 error 文本、URL、代理信息或凭据写入日志。
+func classifyAliyunTransportError(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return "eof"
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "tls") || strings.Contains(lower, "x509"):
+		return "tls"
+	case strings.Contains(lower, "connection reset"):
+		return "reset"
+	case strings.Contains(lower, "connection refused"):
+		return "refused"
+	default:
+		return "other"
+	}
 }
 
 func aliyunBrowserHeaders() map[string]string {
@@ -129,6 +167,7 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 		if err == nil {
 			break
 		}
+		log.Warnf("[BYOA][Aliyun] QR generate transport failure class=%s attempt=%d", classifyAliyunTransportError(err), attempt+1)
 		if attempt == 0 {
 			select {
 			case <-ctx.Done():
