@@ -21,6 +21,12 @@ func TestBYOAVisitorScriptInjection(t *testing.T) {
 	if !strings.Contains(got, `/api/fs/get`) {
 		t.Fatal("BYOA visitor script missing fs/get guard")
 	}
+	if !strings.Contains(got, `method: "POST"`) || !strings.Contains(got, `JSON.stringify(data || {})`) {
+		t.Fatal("BYOA visitor script must POST QR status parameters as JSON")
+	}
+	if strings.Contains(got, `/status?`) || strings.Contains(got, `encodeURIComponent(session.ck`) || strings.Contains(got, `encodeURIComponent(session.token`) {
+		t.Fatal("BYOA visitor script must not place QR status secrets in URL query strings")
+	}
 	if strings.Index(got, `data-xiaoya-byoa="mvp"`) > strings.Index(got, "</body>") {
 		t.Fatal("BYOA visitor script should be injected before </body>")
 	}
