@@ -18,19 +18,31 @@ const (
 )
 
 type aliyunQRStartError struct {
-	code    string
-	message string
+	code           string
+	message        string
+	transportClass string
 }
 
 func (e *aliyunQRStartError) Error() string {
 	return e.message
 }
 
-func newAliyunQRStartNetworkError() error {
+func sanitizeAliyunTransportClass(class string) string {
+	switch class {
+	case "timeout", "dns", "eof", "tls", "reset", "refused", "other":
+		return class
+	default:
+		return "other"
+	}
+}
+
+func newAliyunQRStartNetworkError(transportClass string) error {
 	// 不包装底层 transport error，避免 URL、代理信息或其他运行环境细节被错误链泄露。
+	// 只保留固定 allowlist 类别用于真实环境诊断。
 	return &aliyunQRStartError{
-		code:    AliyunQRStartErrorNetwork,
-		message: "aliyun QR generate network error",
+		code:           AliyunQRStartErrorNetwork,
+		message:        "aliyun QR generate network error",
+		transportClass: sanitizeAliyunTransportClass(transportClass),
 	}
 }
 
@@ -83,4 +95,14 @@ func AliyunQRStartErrorCode(err error) (string, bool) {
 		return "", false
 	}
 	return target.code, true
+}
+
+// AliyunQRStartTransportClass 只为 network 错误返回固定 allowlist transport 类别。
+// 不暴露底层 error 文本、URL、代理、响应正文或任何凭据。
+func AliyunQRStartTransportClass(err error) (string, bool) {
+	var target *aliyunQRStartError
+	if !errors.As(err, &target) || target.code != AliyunQRStartErrorNetwork || target.transportClass == "" {
+		return "", false
+	}
+	return sanitizeAliyunTransportClass(target.transportClass), true
 }
