@@ -78,8 +78,8 @@ func newBYOAHTTPClient() *resty.Client {
 }
 
 // newAliyunHTTPClient 只影响阿里账号授权链路。
-// 对同一域名解析出的多个 IPv4 做 TLS 级 fallback：某个边缘 IP 即使 TCP 已连接但 TLS 握手卡住，
-// 也会自动尝试其它 IPv4。使用 HTTP/1.1 进一步缩小与阿里边缘的协议兼容变量。
+// 真实 VPS 已验证阿里 IPv4 可用而 IPv6 不可达；同时存在部分 IPv4 边缘 TCP 已连接但 TLS 握手超时。
+// 因此在多个 IPv4 A 记录之间做 TLS 级 fallback，并使用 HTTP/1.1；不影响 Quark、OpenList 其他驱动或播放链路。
 func newAliyunHTTPClient() *resty.Client {
 	transport := internalnet.NewIPv4TLSFallbackTransport(nil, 4*time.Second, true)
 	transport.ResponseHeaderTimeout = 8 * time.Second
@@ -135,7 +135,7 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	var resp *resty.Response
 	var err error
 
-	// TLS fallback 已覆盖同一 DNS 结果中的多个 IPv4；这里仍保留一次整请求短重试，用于 DNS/边缘瞬态变化。
+	// 只对 transport 失败做一次短重试；有效 HTTP/WAF 响应绝不重试，保留明确错误分类。
 	for attempt := 0; attempt < 2; attempt++ {
 		result = aliyunGenerateResp{}
 		resp, err = client.R().
@@ -173,6 +173,7 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	}
 	data := result.Content.Data
 	if data.CodeContent == "" || data.CK == "" || data.T == "" {
+		// 只暴露上游数字结果码用于诊断，绝不把响应正文、ck/t 或二维码内容写入错误。
 		if data.ResultCode != 0 {
 			return nil, newAliyunQRStartResultError(data.ResultCode)
 		}
@@ -182,59 +183,128 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	if err != nil {
 		return nil, newAliyunQRStartQREncodeError()
 	}
-	return &AliyunQRStart{CK: data.CK, T: data.T, QRURL: data.CodeContent, QRImage: image}, nil
+	return &AliyunQRStart{
+		CK:      data.CK,
+		T:       data.T,
+		QRURL:   data.CodeContent,
+		QRImage: image,
+	}, nil
 }
 
+// CheckAliyunQR 查询一次扫码状态。
+// 成功后只把短期 Access Token 返回给服务端 handler 写入 HttpOnly Cookie；
+// Refresh Token 只在当前函数内用于换取 Access Token，不持久化。
 func CheckAliyunQR(ctx context.Context, ck, t string) (status *AliyunQRStatus, accessToken string, err error) {
 	ck = strings.TrimSpace(ck)
 	t = strings.TrimSpace(t)
 	if ck == "" || t == "" || len(ck) > 2048 || len(t) > 2048 {
 		return nil, "", errors.New("invalid aliyun QR parameters")
 	}
+
 	var result aliyunQueryResp
 	headers := aliyunBrowserHeaders()
 	headers["Origin"] = "https://www.aliyundrive.com"
-	resp, err := newAliyunHTTPClient().R().SetContext(ctx).SetHeaders(headers).
-		SetQueryParams(map[string]string{"appName": "aliyun_drive", "fromSite": "52", "_bx-v": "2.0.31"}).
-		SetFormData(map[string]string{"t": t, "ck": ck, "appName": "aliyun_drive", "appEntrance": "web", "isMobile": "false", "lang": "zh_CN", "returnUrl": "", "fromSite": "52", "bizParams": "", "navlanguage": "zh-CN", "navPlatform": "MacIntel"}).
-		SetResult(&result).Post(aliyunQRQueryEndpoint)
-	if err != nil { return nil, "", err }
-	if resp.IsError() { return nil, "", fmt.Errorf("aliyun QR query http status: %d", resp.StatusCode()) }
+	resp, err := newAliyunHTTPClient().R().
+		SetContext(ctx).
+		SetHeaders(headers).
+		SetQueryParams(map[string]string{
+			"appName":  "aliyun_drive",
+			"fromSite": "52",
+			"_bx-v":    "2.0.31",
+		}).
+		SetFormData(map[string]string{
+			"t":           t,
+			"ck":          ck,
+			"appName":     "aliyun_drive",
+			"appEntrance": "web",
+			"isMobile":    "false",
+			"lang":        "zh_CN",
+			"returnUrl":   "",
+			"fromSite":    "52",
+			"bizParams":   "",
+			"navlanguage": "zh-CN",
+			"navPlatform": "MacIntel",
+		}).
+		SetResult(&result).
+		Post(aliyunQRQueryEndpoint)
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.IsError() {
+		return nil, "", fmt.Errorf("aliyun QR query http status: %d", resp.StatusCode())
+	}
+
 	data := result.Content.Data
 	switch data.QRCodeStatus {
-	case "NEW": return &AliyunQRStatus{Status: "pending"}, "", nil
-	case "SCANED": return &AliyunQRStatus{Status: "scanned"}, "", nil
-	case "EXPIRED": return &AliyunQRStatus{Status: "expired"}, "", nil
-	case "CANCELED": return &AliyunQRStatus{Status: "canceled"}, "", nil
+	case "NEW":
+		return &AliyunQRStatus{Status: "pending"}, "", nil
+	case "SCANED":
+		return &AliyunQRStatus{Status: "scanned"}, "", nil
+	case "EXPIRED":
+		return &AliyunQRStatus{Status: "expired"}, "", nil
+	case "CANCELED":
+		return &AliyunQRStatus{Status: "canceled"}, "", nil
 	case "CONFIRMED":
-		refreshToken, err := aliyunRefreshTokenFromBizExt(data.BizExt); if err != nil { return nil, "", err }
-		accessToken, err := exchangeAliyunRefreshToken(ctx, refreshToken); if err != nil { return nil, "", err }
+		refreshToken, err := aliyunRefreshTokenFromBizExt(data.BizExt)
+		if err != nil {
+			return nil, "", err
+		}
+		accessToken, err := exchangeAliyunRefreshToken(ctx, refreshToken)
+		if err != nil {
+			return nil, "", err
+		}
 		return &AliyunQRStatus{Status: "success"}, accessToken, nil
-	default: return nil, "", fmt.Errorf("unexpected aliyun QR status: %q", data.QRCodeStatus)
+	default:
+		return nil, "", fmt.Errorf("unexpected aliyun QR status: %q", data.QRCodeStatus)
 	}
 }
 
 func aliyunRefreshTokenFromBizExt(encoded string) (string, error) {
-	if encoded == "" { return "", errors.New("empty aliyun bizExt") }
+	if encoded == "" {
+		return "", errors.New("empty aliyun bizExt")
+	}
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil { decoded, err = base64.RawStdEncoding.DecodeString(encoded); if err != nil { return "", fmt.Errorf("decode aliyun bizExt: %w", err) } }
+	if err != nil {
+		// 某些响应省略 base64 padding，兼容 RawStdEncoding。
+		decoded, err = base64.RawStdEncoding.DecodeString(encoded)
+		if err != nil {
+			return "", fmt.Errorf("decode aliyun bizExt: %w", err)
+		}
+	}
 	var ext aliyunLoginBizExt
-	if err := json.Unmarshal(decoded, &ext); err != nil { return "", fmt.Errorf("decode aliyun login result: %w", err) }
+	if err := json.Unmarshal(decoded, &ext); err != nil {
+		return "", fmt.Errorf("decode aliyun login result: %w", err)
+	}
 	refreshToken := strings.TrimSpace(ext.LoginResult.RefreshToken)
-	if refreshToken == "" { return "", errors.New("aliyun refresh token not found") }
+	if refreshToken == "" {
+		return "", errors.New("aliyun refresh token not found")
+	}
 	return refreshToken, nil
 }
 
 func exchangeAliyunRefreshToken(ctx context.Context, refreshToken string) (string, error) {
 	var result aliyunRefreshResp
-	resp, err := newAliyunHTTPClient().R().SetContext(ctx).SetHeaders(aliyunBrowserHeaders()).
-		SetBody(map[string]string{"refresh_token": refreshToken, "grant_type": "refresh_token"}).
-		SetResult(&result).SetError(&result).Post(aliyunRefreshEndpoint)
-	if err != nil { return "", err }
+	resp, err := newAliyunHTTPClient().R().
+		SetContext(ctx).
+		SetHeaders(aliyunBrowserHeaders()).
+		SetBody(map[string]string{
+			"refresh_token": refreshToken,
+			"grant_type":    "refresh_token",
+		}).
+		SetResult(&result).
+		SetError(&result).
+		Post(aliyunRefreshEndpoint)
+	if err != nil {
+		return "", err
+	}
 	if resp.IsError() || result.Code != "" {
-		if result.Message != "" { return "", errors.New(result.Message) }
+		if result.Message != "" {
+			return "", errors.New(result.Message)
+		}
 		return "", fmt.Errorf("aliyun token refresh http status: %d", resp.StatusCode())
 	}
-	if result.AccessToken == "" { return "", errors.New("empty aliyun access token") }
+	if result.AccessToken == "" {
+		return "", errors.New("empty aliyun access token")
+	}
 	return result.AccessToken, nil
 }
