@@ -3,6 +3,9 @@ package byoa
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,6 +45,30 @@ func TestAliyunQRGenerateResultCodeIsSafe(t *testing.T) {
 	}
 	if seenReferer != aliyunBrowserReferer {
 		t.Fatalf("Referer = %q, want %q", seenReferer, aliyunBrowserReferer)
+	}
+}
+
+func TestClassifyAliyunTransportError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "none", err: nil, want: "none"},
+		{name: "timeout", err: context.DeadlineExceeded, want: "timeout"},
+		{name: "dns", err: &net.DNSError{Err: "no such host", Name: "example.invalid"}, want: "dns"},
+		{name: "eof", err: io.EOF, want: "eof"},
+		{name: "tls", err: errors.New("remote error: tls: handshake failure"), want: "tls"},
+		{name: "reset", err: errors.New("read: connection reset by peer"), want: "reset"},
+		{name: "refused", err: errors.New("dial tcp: connection refused"), want: "refused"},
+		{name: "other", err: errors.New("opaque transport failure"), want: "other"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyAliyunTransportError(tt.err); got != tt.want {
+				t.Fatalf("classifyAliyunTransportError() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
