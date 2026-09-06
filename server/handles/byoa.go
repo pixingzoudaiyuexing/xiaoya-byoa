@@ -81,11 +81,16 @@ func respondAliyunQRStartError(c *gin.Context, err error) bool {
 		return false
 	}
 	responseCode := 502
+	data := gin.H{"error_code": errorCode}
 	if errorCode == byoa.AliyunQRStartErrorNetwork {
 		// 本机到阿里上游的 transport 故障与有效 HTTP 上游错误分开，便于 CI/前端稳定判断。
 		responseCode = 503
+		if transportClass, ok := byoa.AliyunQRStartTransportClass(err); ok {
+			// 只返回固定 allowlist 类别，不返回底层 error 文本或任何请求/凭据内容。
+			data["transport_class"] = transportClass
+		}
 	}
-	common.ErrorWithDataResp(c, err, responseCode, gin.H{"error_code": errorCode})
+	common.ErrorWithDataResp(c, err, responseCode, data)
 	return true
 }
 
