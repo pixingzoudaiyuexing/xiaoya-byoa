@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -73,6 +75,22 @@ func newBYOAHTTPClient() *resty.Client {
 	return resty.New().SetTimeout(byoaUpstreamTimeout)
 }
 
+// newAliyunHTTPClient 只影响阿里账号授权链路。
+// 某些 VPS 会解析出阿里 IPv6 地址，但实际没有可用的 IPv6 出口；Go 默认双栈拨号在这些环境里
+// 可能把阿里扫码请求归类成 transport error。基于默认 Transport 克隆，仅固定 tcp4，保留 HTTP/2、
+// ProxyFromEnvironment、连接池、TLS 等默认行为。
+func newAliyunHTTPClient() *resty.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	transport.DialContext = func(ctx context.Context, _ string, address string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", address)
+	}
+	return resty.New().SetTransport(transport).SetTimeout(byoaUpstreamTimeout)
+}
+
 func aliyunBrowserHeaders() map[string]string {
 	return map[string]string{
 		"User-Agent":      aliyunBrowserUserAgent,
@@ -85,7 +103,7 @@ func aliyunBrowserHeaders() map[string]string {
 // StartAliyunQR 创建阿里云盘普通账号扫码二维码。
 // ck/t 直接交由浏览器持有，服务端不维护扫码 Session。
 func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
-	client := newBYOAHTTPClient()
+	client := newAliyunHTTPClient()
 	var result aliyunGenerateResp
 	var resp *resty.Response
 	var err error
@@ -158,7 +176,7 @@ func CheckAliyunQR(ctx context.Context, ck, t string) (status *AliyunQRStatus, a
 	var result aliyunQueryResp
 	headers := aliyunBrowserHeaders()
 	headers["Origin"] = "https://www.aliyundrive.com"
-	resp, err := newBYOAHTTPClient().R().
+	resp, err := newAliyunHTTPClient().R().
 		SetContext(ctx).
 		SetHeaders(headers).
 		SetQueryParams(map[string]string{
@@ -238,7 +256,7 @@ func aliyunRefreshTokenFromBizExt(encoded string) (string, error) {
 
 func exchangeAliyunRefreshToken(ctx context.Context, refreshToken string) (string, error) {
 	var result aliyunRefreshResp
-	resp, err := newBYOAHTTPClient().R().
+	resp, err := newAliyunHTTPClient().R().
 		SetContext(ctx).
 		SetHeaders(aliyunBrowserHeaders()).
 		SetBody(map[string]string{
