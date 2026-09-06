@@ -18,7 +18,11 @@ var (
 	aliyunRefreshEndpoint    = "https://auth.alipan.com/v2/account/token"
 )
 
-const byoaUpstreamTimeout = 15 * time.Second
+const (
+	byoaUpstreamTimeout     = 15 * time.Second
+	aliyunBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+	aliyunBrowserReferer    = "https://www.aliyundrive.com/"
+)
 
 type AliyunQRStart struct {
 	CK      string `json:"ck"`
@@ -69,24 +73,52 @@ func newBYOAHTTPClient() *resty.Client {
 	return resty.New().SetTimeout(byoaUpstreamTimeout)
 }
 
+func aliyunBrowserHeaders() map[string]string {
+	return map[string]string{
+		"User-Agent":      aliyunBrowserUserAgent,
+		"Referer":         aliyunBrowserReferer,
+		"Accept":          "application/json, text/plain, */*",
+		"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+	}
+}
+
 // StartAliyunQR 创建阿里云盘普通账号扫码二维码。
 // ck/t 直接交由浏览器持有，服务端不维护扫码 Session。
 func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
+	client := newBYOAHTTPClient()
 	var result aliyunGenerateResp
-	resp, err := newBYOAHTTPClient().R().
-		SetContext(ctx).
-		SetQueryParams(map[string]string{
-			"appName":     "aliyun_drive",
-			"fromSite":    "52",
-			"appEntrance": "web",
-			"isMobile":    "false",
-			"lang":        "zh_CN",
-			"returnUrl":   "",
-			"bizParams":   "",
-			"_bx-v":       "2.0.31",
-		}).
-		SetResult(&result).
-		Get(aliyunQRGenerateEndpoint)
+	var resp *resty.Response
+	var err error
+
+	// 只对 transport 失败做一次短重试；有效 HTTP/WAF 响应绝不重试，保留明确错误分类。
+	for attempt := 0; attempt < 2; attempt++ {
+		result = aliyunGenerateResp{}
+		resp, err = client.R().
+			SetContext(ctx).
+			SetHeaders(aliyunBrowserHeaders()).
+			SetQueryParams(map[string]string{
+				"appName":     "aliyun_drive",
+				"fromSite":    "52",
+				"appEntrance": "web",
+				"isMobile":    "false",
+				"lang":        "zh_CN",
+				"returnUrl":   "",
+				"bizParams":   "",
+				"_bx-v":       "2.0.31",
+			}).
+			SetResult(&result).
+			Get(aliyunQRGenerateEndpoint)
+		if err == nil {
+			break
+		}
+		if attempt == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, newAliyunQRStartNetworkError()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
 	if err != nil {
 		return nil, newAliyunQRStartNetworkError()
 	}
@@ -124,8 +156,11 @@ func CheckAliyunQR(ctx context.Context, ck, t string) (status *AliyunQRStatus, a
 	}
 
 	var result aliyunQueryResp
+	headers := aliyunBrowserHeaders()
+	headers["Origin"] = "https://www.aliyundrive.com"
 	resp, err := newBYOAHTTPClient().R().
 		SetContext(ctx).
+		SetHeaders(headers).
 		SetQueryParams(map[string]string{
 			"appName":  "aliyun_drive",
 			"fromSite": "52",
@@ -205,6 +240,7 @@ func exchangeAliyunRefreshToken(ctx context.Context, refreshToken string) (strin
 	var result aliyunRefreshResp
 	resp, err := newBYOAHTTPClient().R().
 		SetContext(ctx).
+		SetHeaders(aliyunBrowserHeaders()).
 		SetBody(map[string]string{
 			"refresh_token": refreshToken,
 			"grant_type":    "refresh_token",
