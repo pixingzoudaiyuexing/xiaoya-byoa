@@ -48,6 +48,29 @@ func TestAliyunQRGenerateResultCodeIsSafe(t *testing.T) {
 	}
 }
 
+func TestAliyunQRGenerateAcceptsNumericT(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":{"data":{"resultCode":100,"codeContent":"https://example.com/qr","ck":"test-ck","t":1788694392248}}}`))
+	}))
+	defer server.Close()
+	withAliyunGenerateEndpoint(t, server.URL)
+
+	result, err := StartAliyunQR(context.Background())
+	if err != nil {
+		t.Fatalf("StartAliyunQR() error = %v", err)
+	}
+	if got, want := result.T, "1788694392248"; got != want {
+		t.Fatalf("T = %q, want %q", got, want)
+	}
+	if result.CK != "test-ck" {
+		t.Fatalf("CK = %q, want test-ck", result.CK)
+	}
+	if !strings.HasPrefix(result.QRImage, "data:image/png;base64,") {
+		t.Fatalf("QRImage prefix is invalid")
+	}
+}
+
 func TestClassifyAliyunTransportError(t *testing.T) {
 	tests := []struct {
 		name string

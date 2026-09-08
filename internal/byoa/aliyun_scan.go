@@ -25,9 +25,9 @@ var (
 )
 
 const (
-	byoaUpstreamTimeout     = 15 * time.Second
+	byoaUpstreamTimeout    = 15 * time.Second
 	aliyunBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
-	aliyunBrowserReferer    = "https://www.aliyundrive.com/"
+	aliyunBrowserReferer   = "https://www.aliyundrive.com/"
 )
 
 type AliyunQRStart struct {
@@ -41,13 +41,37 @@ type AliyunQRStatus struct {
 	Status string `json:"status"`
 }
 
+type aliyunStringOrNumber string
+
+func (value *aliyunStringOrNumber) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return errors.New("empty aliyun string-or-number value")
+	}
+	if data[0] == '"' {
+		var decoded string
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return err
+		}
+		*value = aliyunStringOrNumber(decoded)
+		return nil
+	}
+	for _, char := range data {
+		if char < '0' || char > '9' {
+			return errors.New("aliyun string-or-number value is not an integer")
+		}
+	}
+	*value = aliyunStringOrNumber(data)
+	return nil
+}
+
 type aliyunGenerateResp struct {
 	Content struct {
 		Data struct {
-			ResultCode  int    `json:"resultCode"`
-			CodeContent string `json:"codeContent"`
-			CK          string `json:"ck"`
-			T           string `json:"t"`
+			ResultCode  int                  `json:"resultCode"`
+			CodeContent string               `json:"codeContent"`
+			CK          string               `json:"ck"`
+			T           aliyunStringOrNumber `json:"t"`
 		} `json:"data"`
 	} `json:"content"`
 }
@@ -213,7 +237,7 @@ func StartAliyunQR(ctx context.Context) (*AliyunQRStart, error) {
 	}
 	return &AliyunQRStart{
 		CK:      data.CK,
-		T:       data.T,
+		T:       string(data.T),
 		QRURL:   data.CodeContent,
 		QRImage: image,
 	}, nil
