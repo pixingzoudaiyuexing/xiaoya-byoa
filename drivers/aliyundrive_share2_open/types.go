@@ -91,6 +91,7 @@ type LiveTranscoding struct {
 	TemplateId string `json:"template_id"`
 	Status     string `json:"status"`
 	Url        string `json:"url"`
+	PreviewUrl string `json:"preview_url"`
 }
 
 type LiveTranscodingSubtitle struct {
