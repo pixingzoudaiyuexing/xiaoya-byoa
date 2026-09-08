@@ -98,7 +98,11 @@ admin_hash() {
 }
 
 data_version() {
-  sql "select value from byoa_state where key='xiaoya_data_version' limit 1;"
+  local file_version db_version
+  file_version="$(docker exec "$CONTAINER" sh -c 'test -s /opt/alist/data/xiaoya_data.version && tr -d "\r\n " < /opt/alist/data/xiaoya_data.version')"
+  db_version="$(sql "select value from byoa_state where key='xiaoya_data_version' limit 1;")"
+  test "$file_version" = "$db_version"
+  printf '%s' "$file_version"
 }
 
 assert_config_migration_state() {
@@ -451,7 +455,7 @@ assert_guest_catalog
 
 set_phase refresh-mark-old-version
 echo '=== Force an old content version and verify safe refresh ==='
-sql "create table if not exists byoa_state (key text primary key, value text not null); insert or replace into byoa_state (key,value) values ('xiaoya_data_version','0.0.0');"
+docker exec "$CONTAINER" sh -c "printf '%s\n' '0.0.0' > /opt/alist/data/xiaoya_data.version"
 docker rm -f "$CONTAINER" >/dev/null
 
 set_phase refresh-start

@@ -11,6 +11,8 @@ set -eu
 
 DATA_DIR="${BYOA_DATA_DIR:-/opt/alist/data}"
 DB_PATH="${DATA_DIR}/data.db"
+VERSION_FILE="${DATA_DIR}/xiaoya_data.version"
+VERSION_PENDING="${VERSION_FILE}.pending"
 XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoyaDev/data/main}"
 XIAOYA_VERSION_API_URL="${BYOA_XIAOYA_VERSION_API_URL:-https://api.github.com/repos/xiaoyaDev/data/contents/version.txt?ref=main}"
 UPDATE_MODE="${BYOA_XIAOYA_UPDATE:-if-newer}"
@@ -87,6 +89,14 @@ fetch_remote_version() {
 }
 
 read_local_version() {
+  if [ -s "$VERSION_FILE" ]; then
+    value="$(tr -d '\r\n ' < "$VERSION_FILE" 2>/dev/null || true)"
+    if [ -n "$value" ] && valid_version "$value"; then
+      printf '%s' "$value"
+      return 0
+    fi
+  fi
+
   [ -s "$DB_PATH" ] || return 1
   table_exists="$(sqlite3 "$DB_PATH" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='byoa_state';" 2>/dev/null | tr -d '\r\n ' || true)"
   [ "$table_exists" = "1" ] || return 1
@@ -96,6 +106,11 @@ read_local_version() {
     return 0
   fi
   return 1
+}
+
+stage_updated_version() {
+  [ -n "$REMOTE_VERSION" ] && valid_version "$REMOTE_VERSION" || return 0
+  printf '%s\n' "$REMOTE_VERSION" > "$VERSION_PENDING"
 }
 
 ensure_seed_db() {
@@ -333,6 +348,7 @@ if [ "$need_update" = true ]; then
     fi
     warn "Xiaoya 数据更新失败，继续使用现有数据库"
   else
+    stage_updated_version
     if ! refresh_index; then
       if [ "$STRICT_MODE" = true ]; then
         exit 1

@@ -6,16 +6,19 @@
 # - 把旧 AliyundriveShare 系列统一切换为支持浏览器 BYOA 的 AliyunShare；
 # - 删除服务端账号型驱动与历史私人凭据字段；
 # - 只继承 Xiaoya 内容数据库；legacy runtime config 只隔离一次，之后保留 OpenList v4 自己的配置；
-# - 将 Xiaoya 内容版本写入持久化 data.db。
+# - 将 Xiaoya 内容版本写入持久化 data.db 和兼容版本文件。
 #
 # 所有关键失败都显式处理，避免 Alpine / BusyBox shell 因复合命令状态静默退出。
 
 DATA_DIR="${BYOA_DATA_DIR:-/opt/alist/data}"
 DB_PATH="${DATA_DIR}/data.db"
 CONFIG_PATH="${DATA_DIR}/config.json"
+VERSION_FILE="${DATA_DIR}/xiaoya_data.version"
+VERSION_PENDING="${VERSION_FILE}.pending"
 XIAOYA_DATA_URL="${BYOA_XIAOYA_DATA_URL:-https://raw.githubusercontent.com/xiaoyaDev/data/main}"
 STRICT_MODE="${BYOA_XIAOYA_STRICT:-false}"
 VERSION_TMP="/tmp/byoa-xiaoya-version.$$"
+VERSION_FILE_TMP="${VERSION_FILE}.tmp.$$"
 CONFIG_MIGRATION_KEY="openlist_v4_config_migrated"
 
 log() {
@@ -49,7 +52,7 @@ sql_scalar() {
 }
 
 cleanup() {
-  rm -f "$VERSION_TMP" 2>/dev/null || true
+  rm -f "$VERSION_TMP" "$VERSION_FILE_TMP" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -181,11 +184,11 @@ fi
 log "BYOA 存储驱动归一化 SQL 已完成"
 
 # 版本解析故意不用“函数 + command substitution”。
-# 先检查镜像/数据目录现成版本文件，再显式下载官方 version.txt。
+# 优先使用本次更新的 pending 标记，再检查持久标记、数据库和镜像版本。
 log "开始解析 Xiaoya 数据版本"
 version=""
 version_source=""
-for candidate_file in /version.txt /www/data/version.txt /data/version.txt; do
+for candidate_file in "$VERSION_PENDING" "$VERSION_FILE"; do
   if [ -s "$candidate_file" ]; then
     candidate="$(tr -d '\r\n ' < "$candidate_file" 2>/dev/null || true)"
     if [ -n "$candidate" ] && valid_version "$candidate"; then
@@ -195,6 +198,27 @@ for candidate_file in /version.txt /www/data/version.txt /data/version.txt; do
     fi
   fi
 done
+
+if [ -z "$version" ]; then
+  existing="$(sql_scalar "SELECT value FROM byoa_state WHERE key='xiaoya_data_version' LIMIT 1;" || true)"
+  if [ -n "$existing" ] && valid_version "$existing"; then
+    version="$existing"
+    version_source="byoa_state"
+  fi
+fi
+
+if [ -z "$version" ]; then
+  for candidate_file in /version.txt /www/data/version.txt /data/version.txt; do
+    if [ -s "$candidate_file" ]; then
+      candidate="$(tr -d '\r\n ' < "$candidate_file" 2>/dev/null || true)"
+      if [ -n "$candidate" ] && valid_version "$candidate"; then
+        version="$candidate"
+        version_source="$candidate_file"
+        break
+      fi
+    fi
+  done
+fi
 
 if [ -z "$version" ]; then
   rm -f "$VERSION_TMP"
@@ -220,6 +244,21 @@ INSERT OR REPLACE INTO byoa_state (key, value)
 VALUES ('xiaoya_data_version', '$version');
 SQL
   then
+    if [ "$version_source" = "$VERSION_PENDING" ]; then
+      if ! mv -f "$VERSION_PENDING" "$VERSION_FILE"; then
+        warn "提交 Xiaoya 数据版本文件失败"
+        if [ "$STRICT_MODE" = true ]; then
+          exit 1
+        fi
+      fi
+    else
+      if ! printf '%s\n' "$version" > "$VERSION_FILE_TMP" || ! mv -f "$VERSION_FILE_TMP" "$VERSION_FILE"; then
+        warn "写入 Xiaoya 数据版本文件失败"
+        if [ "$STRICT_MODE" = true ]; then
+          exit 1
+        fi
+      fi
+    fi
     log "已记录 Xiaoya 数据版本：${version}"
   else
     warn "写入 Xiaoya 数据版本失败"
