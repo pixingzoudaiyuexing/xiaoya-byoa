@@ -56,7 +56,7 @@ start_container() {
 }
 
 sql() {
-  docker exec "$CONTAINER" sqlite3 /opt/alist/data/data.db "$1"
+  docker exec "$CONTAINER" sqlite3 -cmd '.timeout 5000' /opt/alist/data/data.db "$1"
 }
 
 storage_snapshot() {
@@ -93,7 +93,7 @@ key_hash() {
 }
 
 admin_hash() {
-  docker exec "$CONTAINER" sqlite3 -separator '|' /opt/alist/data/data.db \
+  docker exec "$CONTAINER" sqlite3 -cmd '.timeout 5000' -separator '|' /opt/alist/data/data.db \
     "select * from x_users where id=1;" | sha256sum | awk '{print $1}'
 }
 
