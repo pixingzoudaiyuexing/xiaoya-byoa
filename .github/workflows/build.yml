@@ -44,7 +44,9 @@ jobs:
           sh -n entrypoint.sh
           sh -n scripts/byoa-xiaoya-bootstrap.sh
           sh -n scripts/byoa-xiaoya-normalize.sh
-          docker compose -f docker-compose.byoa.yml config >/dev/null
+          docker compose -f docker-compose.byoa.yml config --format json \
+            | jq -e '.services["xiaoya-byoa"].ports[] | select(.target == 5244 and .published == "5244" and .host_ip == "127.0.0.1")' \
+            >/dev/null
 
   build:
     needs: byoa-test
