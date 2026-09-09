@@ -2,6 +2,7 @@ package common
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -47,5 +48,31 @@ func TestSetBYOACredentialCookieRejectsOversizedValue(t *testing.T) {
 	}
 	if got := recorder.Header().Values("Set-Cookie"); len(got) != 0 {
 		t.Fatalf("Set-Cookie emitted for oversized credential: %v", got)
+	}
+}
+
+func TestSetBYOACredentialCookieAttributes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest("GET", "http://example.test/", nil)
+	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+
+	if err := SetBYOACredentialCookie(ctx, byoa.ProviderQuark, "test-quark-cookie"); err != nil {
+		t.Fatalf("SetBYOACredentialCookie() error = %v", err)
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1", len(cookies))
+	}
+	cookie := cookies[0]
+	if cookie.Name != byoa.CookieQuark || cookie.Path != "/" {
+		t.Fatalf("cookie name/path = %q/%q", cookie.Name, cookie.Path)
+	}
+	if !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie attributes: HttpOnly=%t Secure=%t SameSite=%v", cookie.HttpOnly, cookie.Secure, cookie.SameSite)
+	}
+	if len(cookie.Value) == 0 || len(cookie.Value) > maxBYOACookieValueBytes {
+		t.Fatalf("encrypted cookie bytes = %d", len(cookie.Value))
 	}
 }

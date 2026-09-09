@@ -8,6 +8,7 @@ import (
 
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
 )
 
 // 浏览器通常把单个 Cookie 限制在约 4 KiB。预留名称和属性空间，避免服务端返回成功但浏览器静默丢弃凭据。
@@ -38,6 +39,7 @@ func SetBYOACredentialCookie(c *gin.Context, provider byoa.Provider, credential 
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
+	log.Infof("[BYOA] stored encrypted browser cookie provider=%s bytes=%d secure=%t httponly=true samesite=lax", provider, len(encoded), secure)
 	return nil
 }
 
