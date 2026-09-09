@@ -6,6 +6,17 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 )
 
+func TestBYOARequestProxyDriver(t *testing.T) {
+	if !usesBYOARequestProxy("QuarkShare") {
+		t.Fatal("QuarkShare must keep browser credentials behind the request-scoped proxy")
+	}
+	for _, driverName := range []string{"UCShare", "AliyunShare", "Local"} {
+		if usesBYOARequestProxy(driverName) {
+			t.Fatalf("%s proxy behavior must remain unchanged", driverName)
+		}
+	}
+}
+
 func TestGetReadme(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -32,7 +32,6 @@ func init() {
 			config: driver.Config{
 				Name:              "QuarkShare",
 				DefaultRoot:       "0",
-				OnlyProxy:         true,
 				NoOverwriteUpload: true,
 			},
 			conf: Conf{

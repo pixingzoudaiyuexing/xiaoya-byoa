@@ -8,7 +8,6 @@ import (
 
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
-	"github.com/OpenListTeam/OpenList/v4/internal/op"
 )
 
 func TestQuarkBYOARequiresBrowserCredential(t *testing.T) {
@@ -44,23 +43,5 @@ func TestQuarkBYOARequiresBrowserCredential(t *testing.T) {
 	}
 	if quarkBYOAAuthExpired(http.StatusTooManyRequests, Resp{Message: "请求频繁"}) {
 		t.Fatal("rate limiting must not be treated as expired browser auth")
-	}
-}
-
-func TestQuarkBYOAUsesRequestScopedProxy(t *testing.T) {
-	quarkConstructor, err := op.GetDriver("QuarkShare")
-	if err != nil {
-		t.Fatalf("GetDriver(QuarkShare): %v", err)
-	}
-	if !quarkConstructor().Config().MustProxy() {
-		t.Fatal("QuarkShare must proxy browser-owned credentials through the current request")
-	}
-
-	ucConstructor, err := op.GetDriver("UCShare")
-	if err != nil {
-		t.Fatalf("GetDriver(UCShare): %v", err)
-	}
-	if ucConstructor().Config().MustProxy() {
-		t.Fatal("UCShare proxy behavior must remain unchanged")
 	}
 }
