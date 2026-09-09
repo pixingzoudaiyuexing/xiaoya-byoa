@@ -45,3 +45,12 @@ func TestBYOAVisitorScriptDoesNotDuplicate(t *testing.T) {
 		t.Fatal("second BYOA injection changed already-injected HTML")
 	}
 }
+
+func TestBYOAVisitorScriptHidesREADMEFetchErrors(t *testing.T) {
+	got := injectBYOAVisitorScript("<html><body></body></html>")
+	for _, marker := range []string{"hideREADMEFetchError", "README\\\\.md", "Failed to fetch", "MutationObserver"} {
+		if !strings.Contains(got, marker) {
+			t.Fatalf("injected script missing README error guard marker %q", marker)
+		}
+	}
+}

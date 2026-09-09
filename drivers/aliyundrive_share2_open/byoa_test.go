@@ -102,3 +102,47 @@ func TestAliyunBYOAFallsBackToShareVideoPreview(t *testing.T) {
 		t.Fatalf("calls: download=%d preview=%d, want 1 each", downloadCalls, previewCalls)
 	}
 }
+
+func TestRequestAliyunBYOAShareURLPrefersVideoURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/download" {
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"video_preview_play_info":{"live_transcoding_task_list":[{"url":"https://example.com/full.mp4","preview_url":"https://example.com/preview.m3u8"}]}}`))
+	}))
+	defer server.Close()
+	oldDownloadEndpoint, oldPreviewEndpoint := aliyunBYOAShareDownloadEndpoint, aliyunBYOASharePreviewEndpoint
+	aliyunBYOAShareDownloadEndpoint, aliyunBYOASharePreviewEndpoint = server.URL+"/download", server.URL+"/preview"
+	t.Cleanup(func() {
+		aliyunBYOAShareDownloadEndpoint, aliyunBYOASharePreviewEndpoint = oldDownloadEndpoint, oldPreviewEndpoint
+	})
+
+	url, _, err := requestAliyunBYOAShareURL(resty.New(), context.Background(), "token", "share", "drive", "file", "id")
+	if err != nil || url != "https://example.com/full.mp4" {
+		t.Fatalf("url = %q, err = %v, want full video URL", url, err)
+	}
+}
+
+func TestRequestAliyunBYOAShareURLUsesPreviewFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/download" {
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"video_preview_play_info":{"live_transcoding_task_list":[{"preview_url":"https://example.com/preview.m3u8"}]}}`))
+	}))
+	defer server.Close()
+	oldDownloadEndpoint, oldPreviewEndpoint := aliyunBYOAShareDownloadEndpoint, aliyunBYOASharePreviewEndpoint
+	aliyunBYOAShareDownloadEndpoint, aliyunBYOASharePreviewEndpoint = server.URL+"/download", server.URL+"/preview"
+	t.Cleanup(func() {
+		aliyunBYOAShareDownloadEndpoint, aliyunBYOASharePreviewEndpoint = oldDownloadEndpoint, oldPreviewEndpoint
+	})
+
+	url, _, err := requestAliyunBYOAShareURL(resty.New(), context.Background(), "token", "share", "drive", "file", "id")
+	if err != nil || url != "https://example.com/preview.m3u8" {
+		t.Fatalf("url = %q, err = %v, want preview fallback URL", url, err)
+	}
+}

@@ -135,11 +135,11 @@ func requestAliyunBYOAShareURL(client *resty.Client, ctx context.Context, access
 		return "", nil, fmt.Errorf("aliyun share preview http status: %d", httpResp.StatusCode())
 	}
 	for _, video := range preview.PlayInfo.Videos {
-		if video.PreviewUrl != "" {
-			return video.PreviewUrl, &apiErr, nil
-		}
 		if video.Url != "" {
 			return video.Url, &apiErr, nil
+		}
+		if video.PreviewUrl != "" {
+			return video.PreviewUrl, &apiErr, nil
 		}
 	}
 	return "", &apiErr, nil

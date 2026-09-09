@@ -20,6 +20,26 @@ const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
   var active = null;
   var pollTimer = null;
 
+  function hideREADMEFetchError(node) {
+    if (!node || !node.querySelectorAll) return;
+    var candidates = [node].concat(Array.prototype.slice.call(node.querySelectorAll("*") || []));
+    candidates.forEach(function (el) {
+      var text = (el.textContent || "").trim();
+      if (text.length > 800 || !/README\\.md/i.test(text)) return;
+      if (!/(Failed to fetch|AxiosError|status code\\s*500)/i.test(text)) return;
+      if (el !== document.body && el.parentNode) el.remove();
+    });
+  }
+
+  hideREADMEFetchError(document.body);
+  if (window.MutationObserver) {
+    new MutationObserver(function (records) {
+      records.forEach(function (record) {
+        Array.prototype.forEach.call(record.addedNodes || [], hideREADMEFetchError);
+      });
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+
   function apiRootFromURL(raw) {
     try {
       var u = new URL(raw || location.href, location.href);
