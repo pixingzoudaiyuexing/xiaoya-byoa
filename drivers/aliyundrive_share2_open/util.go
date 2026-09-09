@@ -72,7 +72,7 @@ func (d *AliyundriveShare2Open) getShareToken() error {
 	}
 	var e ErrorResp
 	var resp ShareTokenResp
-	_, err := base.RestyClient.R().
+	_, err := base.GetAliyunRestyClient().R().
 		SetResult(&resp).SetError(&e).SetBody(data).
 		Post("https://api.alipan.com/v2/share_link/get_share_token")
 	if err != nil {
@@ -223,7 +223,7 @@ func (d *AliyundriveShare2Open) deleteOpen(ali *aliyundrive_open.AliyundriveOpen
 
 func (d *AliyundriveShare2Open) request(ali *aliyundrive_open.AliyundriveOpen, url, method string, callback base.ReqCallback) ([]byte, error) {
 	var e ErrorResp
-	req := base.RestyClient.R().
+	req := base.GetAliyunRestyClient().R().
 		SetError(&e).
 		SetHeader("content-type", "application/json").
 		SetHeader("Referer", "https://www.alipan.com/").
@@ -274,7 +274,7 @@ func (d *AliyundriveShare2Open) getFiles(fileId string) ([]File, error) {
 	for {
 		var e ErrorResp
 		var resp ListResp
-		res, err := base.RestyClient.R().
+		res, err := base.GetAliyunRestyClient().R().
 			SetHeader("x-share-token", d.ShareToken).
 			SetHeader(CanaryHeaderKey, CanaryHeaderValue).
 			SetResult(&resp).SetError(&e).SetBody(data).

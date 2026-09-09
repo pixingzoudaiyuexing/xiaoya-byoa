@@ -63,7 +63,7 @@ func Init(e *gin.Engine) {
 	g.HEAD("/sd/:sid/*path", middlewares.PathParse, middlewares.SharingIdParse, handles.SharingDown)
 	g.GET("/sad/:sid", middlewares.EmptyPathParse, middlewares.SharingIdParse, downloadLimiter, handles.SharingArchiveExtract)
 	g.GET("/sad/:sid/*path", middlewares.PathParse, middlewares.SharingIdParse, downloadLimiter, handles.SharingArchiveExtract)
-	g.HEAD("/sad/:sid", middlewares.EmptyPathParse, middlewares.SharingIdParse, handles.SharingArchiveExtract)
+	g.HEAD("/sad/:sid", middlewares.EmptyPathParse, middlewares.SharingIdParse, downloadLimiter, handles.SharingArchiveExtract)
 	g.HEAD("/sad/:sid/*path", middlewares.PathParse, middlewares.SharingIdParse, handles.SharingArchiveExtract)
 
 	api := g.Group("/api")
@@ -101,6 +101,13 @@ func Init(e *gin.Engine) {
 	public.Any("/settings", handles.PublicSettings)
 	public.Any("/offline_download_tools", handles.OfflineDownloadTools)
 	public.Any("/archive_extensions", handles.ArchiveExtensions)
+	byoaQRStartLimit := middlewares.BYOAQRStartRateLimit()
+	byoaQRStatusLimit := middlewares.BYOAQRStatusRateLimit()
+	public.GET("/byoa/quark/start", byoaQRStartLimit, handles.BYOAQuarkStart)
+	public.POST("/byoa/quark/status", byoaQRStatusLimit, handles.BYOAQuarkStatus)
+	public.GET("/byoa/aliyun/start", byoaQRStartLimit, handles.BYOAAliyunStart)
+	public.POST("/byoa/aliyun/status", byoaQRStatusLimit, handles.BYOAAliyunStatus)
+	public.POST("/byoa/clear", handles.BYOAClear)
 
 	_fs(auth.Group("/fs"))
 	_index115(auth.Group("/index115"))

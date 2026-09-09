@@ -1,0 +1,20 @@
+services:
+  xiaoya-byoa:
+    build:
+      context: .
+      dockerfile: Dockerfile.byoa
+    container_name: xiaoya-byoa
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      BYOA_XIAOYA_BOOTSTRAP: "true"
+      BYOA_XIAOYA_UPDATE: if-newer
+      BYOA_XIAOYA_STRICT: "false"
+    # 仅允许本机反向代理或本机浏览器访问，不直接暴露管理端口。
+    ports:
+      - "127.0.0.1:5244:5244"
+    volumes:
+      - xiaoya_byoa_data:/opt/alist/data
+
+volumes:
+  xiaoya_byoa_data:

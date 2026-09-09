@@ -1,0 +1,18 @@
+services:
+  xiaoya-byoa:
+    image: ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest
+    pull_policy: always
+    container_name: xiaoya-byoa
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      BYOA_XIAOYA_BOOTSTRAP: "true"
+      BYOA_XIAOYA_UPDATE: if-newer
+      BYOA_XIAOYA_STRICT: "false"
+    ports:
+      - "127.0.0.1:5244:5244"
+    volumes:
+      - xiaoya_byoa_data:/opt/alist/data
+
+volumes:
+  xiaoya_byoa_data:

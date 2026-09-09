@@ -128,6 +128,8 @@ func UpdateIndex() {
 		"<!-- customize body -->": customizeBody,
 	}
 	conf.IndexHtml = replaceStrings(conf.ManageHtml, replaceMap2)
+	// BYOA 只作用于访客页面，管理后台保持原样。
+	conf.IndexHtml = injectBYOAVisitorScript(conf.IndexHtml)
 	utils.Log.Debug("Index.html update completed")
 }
 

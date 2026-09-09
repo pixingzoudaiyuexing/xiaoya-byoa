@@ -321,17 +321,23 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 			common.ErrorResp(c, err, 500)
 			return
 		}
-		if storage.Config().MustProxy() || storage.GetStorage().WebProxy {
+		if usesBYOARequestProxy(storage.Config().Name) {
+			// Quark CDN 需要当前浏览器的 HttpOnly 凭据。先在 JSON 请求中解析 Link，
+			// 让缺失/失效凭据仍返回结构化 NEED_AUTH；成功后只把本站代理 URL 交给前端。
+			link, _, err := fs.Link(c.Request.Context(), reqPath, model.LinkArgs{
+				IP:     c.ClientIP(),
+				Header: c.Request.Header,
+			})
+			if err != nil {
+				common.ErrorResp(c, err, 500)
+				return
+			}
+			link.Close()
+			rawURL = localProxyURL(c, meta, reqPath)
+		} else if storage.Config().MustProxy() || storage.GetStorage().WebProxy {
 			rawURL = common.GenerateDownProxyURL(storage.GetStorage(), reqPath)
 			if rawURL == "" {
-				query := ""
-				if isEncrypt(meta, reqPath) || setting.GetBool(conf.SignAll) {
-					query = "?sign=" + sign.Sign(reqPath)
-				}
-				rawURL = fmt.Sprintf("%s/p%s%s",
-					common.GetApiUrl(c),
-					utils.EncodePath(reqPath, true),
-					query)
+				rawURL = localProxyURL(c, meta, reqPath)
 			}
 		} else {
 			// file have raw url
@@ -384,6 +390,18 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 		Related:     toObjsResp(related, parentPath, isEncrypt(parentMeta, parentPath)),
 		MultiSource: multiSource,
 	})
+}
+
+func usesBYOARequestProxy(driverName string) bool {
+	return driverName == "QuarkShare"
+}
+
+func localProxyURL(c *gin.Context, meta *model.Meta, reqPath string) string {
+	query := ""
+	if isEncrypt(meta, reqPath) || setting.GetBool(conf.SignAll) {
+		query = "?sign=" + sign.Sign(reqPath)
+	}
+	return fmt.Sprintf("%s/p%s%s", common.GetApiUrl(c), utils.EncodePath(reqPath, true), query)
 }
 
 func filterRelated(objs []model.Obj, obj model.Obj) []model.Obj {

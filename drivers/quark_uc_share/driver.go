@@ -8,6 +8,7 @@ import (
 
 	quark "github.com/OpenListTeam/OpenList/v4/drivers/quark_uc"
 	"github.com/OpenListTeam/OpenList/v4/drivers/quark_uc_tv"
+	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/internal/cache"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
@@ -96,6 +97,16 @@ func (d *QuarkUCShare) List(ctx context.Context, dir model.Obj, args model.ListA
 }
 
 func (d *QuarkUCShare) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	// BYOA MVP:夸克播放始终使用当前浏览器自己的 Cookie。
+	// 该分支必须位于任何全局账号、Link Cache 和转存逻辑之前，避免不同浏览器串号。
+	if d.getDriverName() == "Quark" {
+		credential, err := byoa.CredentialFromHeader(args.Header, byoa.ProviderQuark)
+		if err != nil {
+			return nil, err
+		}
+		return d.byoaDirectLink(ctx, file, credential)
+	}
+
 	if d.ShareToken == "" {
 		if err := d.Validate(); err != nil {
 			return nil, err

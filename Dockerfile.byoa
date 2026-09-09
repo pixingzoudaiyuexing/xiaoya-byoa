@@ -1,0 +1,34 @@
+FROM alpine:edge AS builder
+WORKDIR /app/
+RUN apk add --no-cache bash curl jq gcc git go musl-dev
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . ./
+RUN bash scripts/build-byoa-docker.sh
+
+# 保留 Xiaoya 官方运行时和公开数据兼容资源；只替换 PowerList/OpenList 核心。
+FROM xiaoyaliu/alist:latest
+LABEL org.opencontainers.image.title="Xiaoya BYOA"
+LABEL org.opencontainers.image.description="Tokenless Xiaoya catalog with browser-owned Aliyun and Quark playback credentials"
+
+WORKDIR /opt/alist/
+
+# TZ=Asia/Shanghai 需要系统时区数据库；Xiaoya 基础镜像不保证预装。
+RUN apk add --no-cache tzdata
+
+# BYOA 专用构建脚本固定输出 ./bin/alist。
+COPY --from=builder --chmod=755 /app/bin/alist ./alist
+COPY --chmod=755 scripts/byoa-xiaoya-bootstrap.sh /byoa-xiaoya-bootstrap.sh
+COPY --chmod=755 scripts/byoa-xiaoya-normalize.sh /byoa-xiaoya-normalize.sh
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
+
+ENV UMASK=022 \
+    RUN_ARIA2=false \
+    BYOA_XIAOYA_BOOTSTRAP=true \
+    BYOA_XIAOYA_UPDATE=if-newer \
+    BYOA_XIAOYA_STRICT=false
+
+VOLUME ["/opt/alist/data"]
+EXPOSE 5244
+
+ENTRYPOINT ["/entrypoint.sh"]

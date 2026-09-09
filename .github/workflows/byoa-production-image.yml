@@ -1,0 +1,28 @@
+name: Test BYOA Production Image
+
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-image:
+    name: Build BYOA production Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build production image
+        run: |
+          set -e
+          docker build -f Dockerfile.byoa -t xiaoya-byoa:production-check .
+
+      - name: Verify bundled OpenList binary
+        run: |
+          set -e
+          docker run --rm --entrypoint /opt/alist/alist xiaoya-byoa:production-check version

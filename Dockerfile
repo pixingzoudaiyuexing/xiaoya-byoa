@@ -1,6 +1,5 @@
-### Default image is base. You can add other support by modifying BASE_IMAGE_TAG. The following parameters are supported: base (default), aria2, ffmpeg, aio
-ARG BASE_IMAGE_TAG=base
-
+### Xiaoya BYOA production image
+### Keep Xiaoya public catalog/update runtime, replace only the core binary with this fork.
 FROM alpine:edge AS builder
 LABEL stage=go-builder
 WORKDIR /app/
@@ -10,27 +9,32 @@ RUN go mod download
 COPY ./ ./
 RUN bash build.sh release docker
 
-FROM openlistteam/openlist-base-image:${BASE_IMAGE_TAG}
-LABEL MAINTAINER="OpenList"
-ARG INSTALL_FFMPEG=false
+FROM xiaoyaliu/alist:latest
+LABEL MAINTAINER="xiaoya-byoa"
 ARG INSTALL_ARIA2=false
-ARG USER=openlist
+ARG USER=alist
 ARG UID=1001
 ARG GID=1001
 
-WORKDIR /opt/openlist/
+WORKDIR /opt/alist/
 
 RUN addgroup -g ${GID} ${USER} && \
     adduser -D -u ${UID} -G ${USER} ${USER} && \
-    mkdir -p /opt/openlist/data
+    mkdir -p /opt/alist/data
 
-COPY --from=builder --chmod=755 --chown=${UID}:${GID} /app/bin/openlist ./
+RUN apk add --no-cache tzdata
+
+# PowerList/OpenList fork core overlays Xiaoya's original alist binary.
+COPY --from=builder --chmod=755 --chown=${UID}:${GID} /app/bin/alist ./alist
+COPY --chmod=755 --chown=${UID}:${GID} scripts/byoa-xiaoya-bootstrap.sh /byoa-xiaoya-bootstrap.sh
+COPY --chmod=755 --chown=${UID}:${GID} scripts/byoa-xiaoya-normalize.sh /byoa-xiaoya-normalize.sh
 COPY --chmod=755 --chown=${UID}:${GID} entrypoint.sh /entrypoint.sh
 
-USER ${USER}
 RUN /entrypoint.sh version
 
 ENV UMASK=022 RUN_ARIA2=${INSTALL_ARIA2}
-VOLUME /opt/openlist/data/
+VOLUME /opt/alist/data/
 EXPOSE 5244 5245
-CMD [ "/entrypoint.sh" ]
+
+# 明确覆盖 Xiaoya 基础镜像入口，确保 BYOA bootstrap/normalize 由同一 PID 1 控制。
+ENTRYPOINT ["/entrypoint.sh"]

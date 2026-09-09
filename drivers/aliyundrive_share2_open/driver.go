@@ -5,6 +5,7 @@ import (
 	_115 "github.com/OpenListTeam/OpenList/v4/drivers/115"
 	_123rapid "github.com/OpenListTeam/OpenList/v4/drivers/123_rapid"
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
+	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/internal/cache"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
@@ -141,16 +142,13 @@ func (d *AliyundriveShare2Open) list(ctx context.Context, dir model.Obj) ([]mode
 }
 
 func (d *AliyundriveShare2Open) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
-	key := aliyundriveShareLinkCacheKey(file.GetID())
-	if link, ok := aliyundriveShareLinkCache.Get(key); ok {
-		return link, nil
+	// BYOA MVP:阿里播放始终使用当前浏览器自己的普通 Access Token。
+	// 该分支必须位于服务器 AliyundriveOpen 账号池、转存和全局 Link Cache 之前。
+	credential, err := byoa.CredentialFromHeader(args.Header, byoa.ProviderAliyun)
+	if err != nil {
+		return nil, err
 	}
-
-	link, err := resolveAliyundriveShareLink(ctx, d, file, args)
-	if err == nil && link != nil {
-		aliyundriveShareLinkCache.Set(key, link)
-	}
-	return link, err
+	return d.byoaDirectLink(ctx, file, credential)
 }
 
 func (d *AliyundriveShare2Open) aliLink(file model.Obj) (*model.Link, *MyFile, error) {
