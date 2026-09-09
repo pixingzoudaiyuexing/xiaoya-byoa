@@ -27,6 +27,12 @@ func TestBYOAVisitorScriptInjection(t *testing.T) {
 	if strings.Contains(got, `/status?`) || strings.Contains(got, `encodeURIComponent(session.ck`) || strings.Contains(got, `encodeURIComponent(session.token`) {
 		t.Fatal("BYOA visitor script must not place QR status secrets in URL query strings")
 	}
+	if !strings.Contains(got, `path.slice(-7) !== "/@login"`) || !strings.Contains(got, `parsed.origin !== location.origin`) {
+		t.Fatal("BYOA visitor script must validate login redirects as same-origin paths")
+	}
+	if !strings.Contains(got, `location.replace(target)`) || !strings.Contains(got, `setTimeout(finishAuthorization, 700)`) {
+		t.Fatal("BYOA visitor script must return to the original media after authorization")
+	}
 	if strings.Index(got, `data-xiaoya-byoa="mvp"`) > strings.Index(got, "</body>") {
 		t.Fatal("BYOA visitor script should be injected before </body>")
 	}

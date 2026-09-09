@@ -111,6 +111,29 @@ const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
     if (btn) btn.style.display = retry ? "inline-block" : "none";
   }
 
+  function safeRedirectTarget() {
+    try {
+      var path = location.pathname || "";
+      if (path.slice(-7) !== "/@login") return "";
+      var target = new URLSearchParams(location.search || "").get("redirect") || "";
+      if (target.charAt(0) !== "/" || target.charAt(1) === "/" || target.charAt(1) === "\\") return "";
+      var parsed = new URL(target, location.origin);
+      if (parsed.origin !== location.origin) return "";
+      return parsed.pathname + parsed.search + parsed.hash;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function finishAuthorization() {
+    var target = safeRedirectTarget();
+    if (target) {
+      location.replace(target);
+    } else {
+      location.reload();
+    }
+  }
+
   function beginScan(provider, apiRoot) {
     if (pollTimer) clearTimeout(pollTimer);
     active = { provider: provider, apiRoot: apiRoot };
@@ -148,8 +171,8 @@ const byoaVisitorScript = `<script data-xiaoya-byoa="mvp">
       if (!active || active.provider !== provider) return;
       var status = data && data.status;
       if (status === "success") {
-        showStatus("授权成功，正在刷新页面...", false);
-        pollTimer = setTimeout(function () { location.reload(); }, 700);
+        showStatus("授权成功，正在返回播放页面...", false);
+        pollTimer = setTimeout(finishAuthorization, 700);
         return;
       }
       if (status === "expired") {
