@@ -1,174 +1,112 @@
-<div align="center">
-  <img src="https://raw.githubusercontent.com/OpenListTeam/Logo/main/logo.svg" width="128" height="128" alt="logo" />
+# Xiaoya BYOA
 
-  <p><em>OpenList is a resilient, long-term governance, community-driven fork of AList — built to defend open source against trust-based attacks.</em></p>
+Xiaoya BYOA 面向 Reality fallback 伪装站：访客可匿名浏览公开目录，播放 Aliyun 或 Quark 媒体时由当前浏览器扫码授权。
 
-  <img src="https://goreportcard.com/badge/github.com/OpenListTeam/OpenList/v3" alt="latest version" />
-  <a href="https://github.com/OpenListTeam/OpenList/blob/main/LICENSE"><img src="https://img.shields.io/github/license/OpenListTeam/OpenList" alt="License" /></a>
-  <a href="https://github.com/OpenListTeam/OpenList/actions?query=workflow%3ABuild"><img src="https://img.shields.io/github/actions/workflow/status/OpenListTeam/OpenList/build.yml?branch=main" alt="Build status" /></a>
-  <a href="https://github.com/OpenListTeam/OpenList/releases"><img src="https://img.shields.io/github/release/OpenListTeam/OpenList" alt="latest version" /></a>
+正式镜像：`ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest`，支持 `linux/amd64` 和 `linux/arm64`。RealityPanel 固定使用 `latest`。
 
-  <a href="https://github.com/OpenListTeam/OpenList/discussions"><img src="https://img.shields.io/github/discussions/OpenListTeam/OpenList?color=%23ED8936" alt="discussions" /></a>
-  <a href="https://github.com/OpenListTeam/OpenList/releases"><img src="https://img.shields.io/github/downloads/OpenListTeam/OpenList/total?color=%239F7AEA&logo=github" alt="Downloads" /></a>
-</div>
+## Docker 部署
 
----
+### GHCR 正式镜像
 
-- English | [中文](./README/README_cn.md) | [日本語](./README/README_ja.md) | [Dutch](./README/README_nl.md) | [한국어](./README/README_ko.md) | [Deutsch](./README/README_de.md) | [Русский](./README/README_ru.md) | [Français](./README/README_fr.md) | [Español](./README/README_es.md) | [العربية](./README/README_ar.md)
+创建 `docker-compose.yml`：
 
-- [Contributing](./CONTRIBUTING.md)
-- [CODE OF CONDUCT](./CODE_OF_CONDUCT.md)
-- [LICENSE](./LICENSE)
+```yaml
+services:
+  xiaoya-byoa:
+    image: ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest
+    pull_policy: always
+    container_name: xiaoya-byoa
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      BYOA_XIAOYA_BOOTSTRAP: "true"
+      BYOA_XIAOYA_UPDATE: if-newer
+      BYOA_XIAOYA_STRICT: "false"
+    ports:
+      - "127.0.0.1:5244:5244"
+    volumes:
+      - xiaoya_byoa_data:/opt/alist/data
 
-## Disclaimer
+volumes:
+  xiaoya_byoa_data:
+```
 
-OpenList is an open-source project independently maintained by the OpenList Team, following the AGPL-3.0 license and committed to maintaining complete code openness and modification transparency.
+启动并检查：
 
-We have noticed the emergence of some third-party projects in the community with names similar to this project, such as OpenListApp/OpenListApp, as well as some paid proprietary software using the same or similar naming. To avoid user confusion, we hereby declare:
+```bash
+docker compose pull
+docker compose up -d
+curl -fsS http://127.0.0.1:5244/ping
+```
 
-- OpenList has no official association with any third-party derivative projects.
+返回 `pong` 表示容器已响应。5244 只绑定本机，公网访问必须经过 HTTPS fallback 或反向代理。
 
-- All software, code, and services of this project are maintained by the OpenList Team and are freely available on GitHub.
+### 使用仓库内的正式 Compose
 
-- Project documentation and API services primarily rely on charitable resources provided by Cloudflare. There are currently no paid plans or commercial deployments, and the use of existing features does not involve any costs.
+```bash
+git clone https://github.com/pixingzoudaiyuexing/xiaoya-byoa.git
+cd xiaoya-byoa
+docker compose -f docker-compose.byoa.release.yml pull
+docker compose -f docker-compose.byoa.release.yml up -d
+```
 
-We respect the community's rights to free use and derivative development, but we also strongly urge downstream projects:
+### 本地源码构建
 
-- Should not use the "OpenList" name for impersonation promotion or commercial gain;
+```bash
+git clone https://github.com/pixingzoudaiyuexing/xiaoya-byoa.git
+cd xiaoya-byoa
+docker compose -f docker-compose.byoa.yml up -d --build
+```
 
-- Must not distribute OpenList-based code in a closed-source manner or violate AGPL license terms.
+本地构建使用 `Dockerfile.byoa`；正式部署优先使用 GHCR 镜像。
 
-To better maintain healthy ecosystem development, we recommend:
+## 更新与持久化
 
-- Clearly indicate the project source and choose appropriate open-source licenses in accordance with the open-source spirit;
+普通更新：
 
-- If involving commercial use, please avoid using "OpenList" or any confusing naming as the project name;
+```bash
+docker compose pull
+docker compose up -d
+```
 
-- If you need to use materials located under OpenListTeam/Logo, you may modify and use them under compliance with the agreement.
+必须保留 `xiaoya_byoa_data` 数据卷。`/opt/alist/data` 包含 `data.db`、`byoa_cookie.key` 和 `xiaoya_data.version`。普通更新不要执行 `docker compose down -v`，否则会删除卷和实例状态。
 
-Thank you for your support and understanding of the OpenList project.
+## HTTPS 反向代理
 
-## Features
+生产必须使用真实公有 TLS，并传递 `X-Forwarded-Proto=https`：
 
-- [x] Multiple storages
-  - [x] Local storage
-  - [x] [Aliyundrive](https://www.alipan.com)
-  - [x] OneDrive / Sharepoint ([Global](https://www.microsoft.com/en-us/microsoft-365/onedrive/online-cloud-storage), [CN](https://portal.partner.microsoftonline.cn), DE, US)
-  - [x] [189cloud](https://cloud.189.cn) (Personal, Family)
-  - [x] [GoogleDrive](https://drive.google.com)
-  - [x] [123pan](https://www.123pan.com)
-  - [x] [FTP / SFTP](https://en.wikipedia.org/wiki/File_Transfer_Protocol)
-  - [x] [PikPak](https://www.mypikpak.com)
-  - [x] [S3](https://aws.amazon.com/s3)
-  - [x] [Seafile](https://seafile.com)
-  - [x] [UPYUN Storage Service](https://www.upyun.com/products/file-storage)
-  - [x] [WebDAV](https://en.wikipedia.org/wiki/WebDAV)
-  - [x] Teambition([China](https://www.teambition.com), [International](https://us.teambition.com))
-  - [x] [MediaFire](https://www.mediafire.com)
-  - [x] [Mediatrack](https://www.mediatrack.cn)
-  - [x] [ProtonDrive](https://proton.me/drive)
-  - [x] [139yun](https://yun.139.com) (Personal, Family, Group)
-  - [x] [YandexDisk](https://disk.yandex.com)
-  - [x] [BaiduNetdisk](http://pan.baidu.com)
-  - [x] [Terabox](https://www.terabox.com/main)
-  - [x] [UC](https://drive.uc.cn)
-  - [x] [Quark](https://pan.quark.cn)
-  - [x] [Thunder](https://pan.xunlei.com)
-  - [x] [Lanzou](https://www.lanzou.com)
-  - [x] [ILanzou](https://www.ilanzou.com)
-  - [x] [Google photo](https://photos.google.com)
-  - [x] [Mega.nz](https://mega.nz)
-  - [x] [Baidu photo](https://photo.baidu.com)
-  - [x] [SMB](https://en.wikipedia.org/wiki/Server_Message_Block)
-  - [x] [115](https://115.com)
-  - [X] [Cloudreve](https://cloudreve.org)
-  - [x] [Dropbox](https://www.dropbox.com)
-  - [x] [FeijiPan](https://www.feijipan.com)
-  - [x] [dogecloud](https://www.dogecloud.com/product/oss)
-  - [x] [Azure Blob Storage](https://azure.microsoft.com/products/storage/blobs)
-  - [x] [Chaoxing](https://www.chaoxing.com)
-  - [x] [CNB](https://cnb.cool/)
-  - [x] [Degoo](https://degoo.com)
-  - [x] [Doubao](https://www.doubao.com)
-  - [x] [Febbox](https://www.febbox.com)
-  - [x] [GitHub](https://github.com)
-  - [x] [OpenList](https://github.com/OpenListTeam/OpenList)
-  - [x] [Teldrive](https://github.com/tgdrive/teldrive)
-  - [x] [Weiyun](https://www.weiyun.com)
-  - [x] [DingTalk Docs](https://alidocs.dingtalk.com/)
-- [x] Easy to deploy and out-of-the-box
-- [x] File preview (PDF, markdown, code, plain text, ...)
-- [x] Image preview in gallery mode
-- [x] Video and audio preview, support lyrics and subtitles
-- [x] Office documents preview (docx, pptx, xlsx, ...)
-- [x] `README.md` preview rendering
-- [x] File permalink copy and direct file download
-- [x] Dark mode
-- [x] I18n
-- [x] Protected routes (password protection and authentication)
-- [x] WebDAV
-- [x] Docker Deploy
-- [x] Cloudflare Workers proxy
-- [x] File/Folder package download
-- [x] Web upload(Can allow visitors to upload), delete, mkdir, rename, move and copy
-- [x] Offline download
-- [x] Copy files between two storage
-- [x] Multi-thread downloading acceleration for single-thread download/stream
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:5244;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+```
 
-## Document
+请求链路：
 
-- 📘 [Docs](https://doc.oplist.org)
-- 🌏 [CN Mirror](https://doc.oplist.org.cn)
-- ⚖️ [Terms of Use](https://doc.oplist.org/terms)
-- 🔒 [Privacy Policy](https://doc.oplist.org/privacy)
+```text
+normal HTTPS -> fallback / reverse proxy -> Xiaoya BYOA 127.0.0.1:5244
+Reality handshake -> Reality core service
+```
 
-## Demo
+公网反代应隐藏 `/@manage` 和 `/api/admin*`，但不能阻断 `/api/fs/*`、`/api/public/byoa/*`、`/d/*` 或 `/p/*`。Reality core 与 Xiaoya fallback 应保持故障解耦。
 
-- 🌎 [Global Demo](https://demo.oplist.org)
-- 🇨🇳 [CN Demo](https://demo.oplist.org.cn)
+## 支持范围与限制
 
-## Discussion
+- Aliyun：已验证视频预览播放；`get_share_link_download_url` 返回 HTTP 410 时回退到视频预览接口。非视频原文件下载和音频未验证。
+- Quark：使用当前浏览器扫码凭据进行播放。
+- BYOA same-path Link Cache / singleflight 可能导致同路径跨用户 Link 状态复用，这是当前低流量伪装站用途下的 **KNOWN SECURITY FINDINGS: ACCEPTED RISK**，已延期到后续 hardening。
+- 不要在日志、Issue、PR 或配置中提交 Token、Cookie、Authorization 或 admin 密码。
 
-Please refer to [*Discussions*](https://github.com/OpenListTeam/OpenList/discussions) for raising general questions, ***Issues* is for bug reports and feature requests only.**
+## 文档
 
-## Sponsor
+- [正式部署说明](docs/BYOA_DEPLOY.md)
+- [MVP / Release 状态](docs/BYOA_MVP_STATUS.md)
+- [最终交接](docs/CODEX_HANDOFF.md)
+- [许可证](LICENSE)
 
-[![VPS.Town](https://vps.town/static/images/sponsor.png)](https://vps.town "VPS.Town - Trust, Effortlessly. Your Cloud, Reimagined.")
-
-## Donors
-
-Thanks to the following donors for their generous support:
-
-- [HisAtri](https://github.com/HisAtri)
-- 爱发电用户_7jTh
-- suka
-
-## License
-
-The `OpenList` is open-source software licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.txt) license.
-
-## Disclaimer
-
-- This project is a free and open-source software designed to facilitate file sharing via net disks, primarily intended to support the downloading and learning of the Go programming language.
-- Please comply with all applicable laws and regulations when using this software. Any form of misuse is strictly prohibited.
-- The software is based on official SDKs or APIs without any modification, disruption, or interference with their behavior.
-- It only performs HTTP 302 redirects or traffic forwarding, and does not intercept, store, or tamper with any user data.
-- This project is not affiliated with any official platform or service provider.
-- The software is provided "as is", without any warranties of any kind, either express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose.
-- The maintainers are not liable for any direct or indirect damages arising from the use of, or inability to use, this software.
-- You are solely responsible for any risks associated with using this software, including but not limited to account bans or download speed limitations.
-- This project is licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.txt) License. Please see the [LICENSE](./LICENSE) file for details.
-
-## Contact Us
-
-- [@GitHub](https://github.com/OpenListTeam)
-- [Telegram Group](https://t.me/OpenListTeam)
-- [Telegram Channel](https://t.me/OpenListOfficial)
-
-## Contributors
-
-We sincerely thank the author [Xhofe](https://github.com/Xhofe) of the original project [AlistGo/alist](https://github.com/AlistGo/alist) and all other contributors.
-
-Thanks goes to these wonderful people:
-
-[![Contributors](https://contrib.rocks/image?repo=OpenListTeam/OpenList)](https://github.com/OpenListTeam/OpenList/graphs/contributors)
+本项目基于 AGPL-3.0 组件。通过网络提供修改后的程序时，应履行对应源代码提供义务。
