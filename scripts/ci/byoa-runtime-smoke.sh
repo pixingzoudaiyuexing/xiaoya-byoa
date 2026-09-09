@@ -137,7 +137,6 @@ import os
 import re
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 
 base = os.environ["BYOA_BASE_URL"]
@@ -153,6 +152,33 @@ def get_json(path, attempts=3):
     for attempt in range(attempts):
         try:
             request = urllib.request.Request(base + path, method="GET")
+            with urllib.request.urlopen(request, timeout=20) as response:
+                body = json.loads(response.read().decode("utf-8"))
+                body["_http_status"] = response.status
+                return body
+        except urllib.error.HTTPError as exc:
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+                body["_http_status"] = exc.code
+                return body
+            except Exception:
+                error = RuntimeError(f"local BYOA endpoint returned non-JSON HTTP {exc.code}")
+        except Exception as exc:
+            error = exc
+        if attempt + 1 < attempts:
+            time.sleep(1)
+    raise error
+
+def post_json(path, payload, attempts=3):
+    error = None
+    for attempt in range(attempts):
+        try:
+            request = urllib.request.Request(
+                base + path,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
             with urllib.request.urlopen(request, timeout=20) as response:
                 body = json.loads(response.read().decode("utf-8"))
                 body["_http_status"] = response.status
@@ -221,9 +247,8 @@ def classify_aliyun_start_failure(body):
 
 phase("qr-quark-start")
 quark = assert_start("quark", ("token", "qr_url", "qr_image"))
-quark_query = urllib.parse.urlencode({"token": quark["token"]})
 phase("qr-quark-status")
-quark_status = get_json("/api/public/byoa/quark/status?" + quark_query)
+quark_status = post_json("/api/public/byoa/quark/status", {"token": quark["token"]})
 assert quark_status.get("code") == 200, {
     "provider": "quark",
     "operation": "status",
@@ -261,9 +286,8 @@ else:
         assert aliyun.get(key), ("aliyun", key, "missing")
     assert str(aliyun.get("qr_image", "")).startswith("data:image/png;base64,"), ("aliyun", "qr_image", "invalid")
     print("aliyun QR start passed")
-    aliyun_query = urllib.parse.urlencode({"ck": aliyun["ck"], "t": aliyun["t"]})
     phase("qr-aliyun-status")
-    aliyun_status = get_json("/api/public/byoa/aliyun/status?" + aliyun_query)
+    aliyun_status = post_json("/api/public/byoa/aliyun/status", {"ck": aliyun["ck"], "t": aliyun["t"]})
     assert aliyun_status.get("code") == 200, {
         "provider": "aliyun",
         "operation": "status",

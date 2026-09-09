@@ -104,13 +104,10 @@ func Init(e *gin.Engine) {
 	byoaQRStartLimit := middlewares.BYOAQRStartRateLimit()
 	byoaQRStatusLimit := middlewares.BYOAQRStatusRateLimit()
 	public.GET("/byoa/quark/start", byoaQRStartLimit, handles.BYOAQuarkStart)
-	public.POST("/byoa/quark/status", byoaQRStatusLimit, handles.BYOAQuarkStatus)
-	public.GET("/byoa/aliyun/start", byoaQRStartLimit, handles.BYOAAliyunStart)
-	public.POST("/byoa/aliyun/status", byoaQRStatusLimit, handles.BYOAAliyunStatus)
-	// 临时兼容旧 CI 和可能被浏览器缓存的旧访客脚本；新脚本绝不把扫码参数放入 URL。
-	public.GET("/byoa/quark/status", byoaQRStatusLimit, handles.BYOAQuarkStatus)
-	public.GET("/byoa/aliyun/status", byoaQRStatusLimit, handles.BYOAAliyunStatus)
-	public.POST("/byoa/clear", handles.BYOAClear)
+		public.POST("/byoa/quark/status", byoaQRStatusLimit, handles.BYOAQuarkStatus)
+		public.GET("/byoa/aliyun/start", byoaQRStartLimit, handles.BYOAAliyunStart)
+		public.POST("/byoa/aliyun/status", byoaQRStatusLimit, handles.BYOAAliyunStatus)
+		public.POST("/byoa/clear", handles.BYOAClear)
 
 	_fs(auth.Group("/fs"))
 	_index115(auth.Group("/index115"))

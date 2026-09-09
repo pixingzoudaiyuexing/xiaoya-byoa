@@ -1,8 +1,6 @@
 package handles
 
 import (
-	"net/http"
-
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/server/common"
 	"github.com/gin-gonic/gin"
@@ -18,10 +16,6 @@ type byoaAliyunStatusReq struct {
 }
 
 func quarkStatusToken(c *gin.Context) (string, bool) {
-	if c.Request.Method != http.MethodPost {
-		// 临时兼容旧 CI/缓存前端；正式访客脚本只使用 POST JSON，避免 token 进入 URL/access log。
-		return c.Query("token"), true
-	}
 	var req byoaQuarkStatusReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ErrorResp(c, err, 400)
@@ -31,10 +25,6 @@ func quarkStatusToken(c *gin.Context) (string, bool) {
 }
 
 func aliyunStatusParams(c *gin.Context) (ck, t string, ok bool) {
-	if c.Request.Method != http.MethodPost {
-		// 临时兼容旧 CI/缓存前端；正式访客脚本只使用 POST JSON，避免 ck/t 进入 URL/access log。
-		return c.Query("ck"), c.Query("t"), true
-	}
 	var req byoaAliyunStatusReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ErrorResp(c, err, 400)
