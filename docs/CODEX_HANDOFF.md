@@ -14,6 +14,8 @@ Feature release source: d23062f5
 
 PR #1 的 BYOA MVP 已完成本地和 CI 验收，正式发布决策已批准。GitHub Actions 在 `main` 推送后发布 `latest`、`sha-<short-sha>`，版本 tag 可发布对应版本标签。RealityPanel 永远固定拉取 `latest`。
 
+本次功能修复：Aliyun 2-minute preview bug **FIXED**；首页 README 500 visual error **FIXED**。
+
 ## Completed Acceptance
 
 ```text

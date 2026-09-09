@@ -25,7 +25,11 @@ Feature release source: d23062f5
 
 Aliyun 播放优先调用 `get_share_link_download_url`；该接口返回 HTTP 410 Gone 后，回退到 `get_share_link_video_preview_play_info`，使用 `preview_url`（兼容 `url`）播放视频。MVP 已验证视频预览播放；非视频原文件下载和音频不属于当前已验证能力。
 
+Aliyun 视频回退列表现在优先使用完整 `url`，仅在 `url` 为空时使用 `preview_url`；Aliyun 2-minute preview bug: **FIXED**。
+
 Quark 播放通过同源 `/p/` 请求级代理向 CDN 发送当前浏览器 Cookie、UA 和 Referer。
+
+首页 README 请求失败时，访客注入层只静默移除 README 的错误块；README success 继续正常显示，README failure 不再显示 Axios 500。
 
 ## Final Acceptance
 

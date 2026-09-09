@@ -83,6 +83,8 @@ BYOA same-path requests may reuse request-derived Link state through OpenList gl
 
 Production Reality E2E 未运行不撤销当前 release approval，但必须在预生产部署验收阶段完成。外部 CVE、DAST、渗透测试以及 Aliyun 非视频/音频能力仍未验证。
 
+功能修复状态：Aliyun 2-minute preview bug **FIXED**；首页 README 500 visual error **FIXED**。Known same-path cross-user Link reuse 仍为 **ACCEPTED RISK / DEFERRED**，本次未修复。
+
 ## License
 
 本项目基于 AGPL-3.0 组件。通过网络提供修改后的程序时，应履行对应源代码提供义务。
