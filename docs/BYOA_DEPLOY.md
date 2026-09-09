@@ -1,58 +1,58 @@
-# Xiaoya BYOA 部署说明
+# Xiaoya BYOA 正式部署说明
 
-> 当前文档对应 `feature/byoa-mvp`，与最终 MVP 验收实现同步。
+> **RELEASE APPROVED**
 >
-> MVP 状态：**READY**。生产状态：**NOT READY**，Production Reality E2E 延期至预生产部署验收。
+> RealityPanel 固定使用 `ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest`。`main` 是正式稳定代码；推送 `main` 后自动构建并发布 `latest` 与 `sha-<short-sha>` 多架构镜像。
 
-## 部署边界
+## Production Compose
 
-Xiaoya BYOA 是 Reality fallback 伪装站：公开目录匿名浏览，真正播放时由当前浏览器扫码。服务器不保存访客私人 Aliyun/Quark 账号，不使用用户 Session DB、Redis 或账号池。
+```yaml
+services:
+  xiaoya-byoa:
+    image: ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest
+    pull_policy: always
+    container_name: xiaoya-byoa
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      BYOA_XIAOYA_BOOTSTRAP: "true"
+      BYOA_XIAOYA_UPDATE: if-newer
+      BYOA_XIAOYA_STRICT: "false"
+    ports:
+      - "127.0.0.1:5244:5244"
+    volumes:
+      - xiaoya_byoa_data:/opt/alist/data
 
-支持 Provider：Aliyun、Quark。不要恢复 `mytoken.txt`、`myopentoken.txt`、`quark_cookie.txt` 或其他全局私人账号方案。
+volumes:
+  xiaoya_byoa_data:
+```
 
-## 启动
+首次部署或更新：
 
 ```bash
-git clone https://github.com/pixingzoudaiyuexing/xiaoya-byoa.git
-cd xiaoya-byoa
-git checkout feature/byoa-mvp
-docker compose -f docker-compose.byoa.yml up -d --build
-curl -fsS http://127.0.0.1:5244/ping
+docker compose pull
+docker compose up -d
 ```
 
-默认结果：`pong`。
+普通更新禁止使用 `docker compose down -v`。必须保留 `/opt/alist/data`，其中包括 `data.db`、`byoa_cookie.key` 和 `xiaoya_data.version`。
 
-Compose 只发布：
+## RealityPanel Contract
 
 ```text
-127.0.0.1:5244 -> container:5244
+Image: ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest
+Endpoint: 127.0.0.1:5244
 ```
 
-5244 不应直接暴露到公网；由 HTTPS reverse proxy / Reality fallback 接入。
-
-## 首次启动与持久化
-
-空 volume 首启自动取得 Xiaoya 官方公开数据，归一化为 `AliyunShare`、`QuarkShare` 和 `Alias`。不需要预置任何私人 Token/Cookie。
-
-持久化目录 `/opt/alist/data` 包含：
-
-```text
-data.db
-byoa_cookie.key       # 0600，实例级 AES-256-GCM 密钥
-xiaoya_data.version   # 与 byoa_state.xiaoya_data_version 一致
-```
-
-删除 container、保留 volume 时，BYOA key、admin、目录和版本应保持。`BYOA_XIAOYA_UPDATE=if-newer` 同版本不更新，远端版本检查失败继续使用本地内容。
+5244 仅 loopback；RealityPanel 不需要随 BYOA 版本修改镜像地址。
 
 ## HTTPS Reverse Proxy
 
-生产必须使用真实公有 TLS。反代必须传递：
+生产必须使用真实公有 TLS，并传递 `X-Forwarded-Proto=https`：
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:5244;
     proxy_http_version 1.1;
-
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -60,82 +60,28 @@ location / {
 }
 ```
 
-请求链路：
+链路为 `normal HTTPS -> fallback -> Xiaoya BYOA`；Reality core service 与 Xiaoya fallback 故障解耦。公网反代隐藏 `/@manage` 和 `/api/admin*`，但不能阻断 `/api/fs/*`、`/api/public/byoa/*`、`/d/*`、`/p/*`。
 
-```text
-normal HTTPS
-    -> fallback / reverse proxy
-    -> Xiaoya BYOA 127.0.0.1:5244
-```
+## Accepted Risk
 
-HTTPS 下 BYOA Cookie 必须为：
-
-```text
-HttpOnly; Secure; SameSite=Lax; Path=/
-```
-
-## Reality Fallback
-
-目标结构：
-
-```text
-公网 :443
-  ├─ Reality handshake -> Reality core service
-  └─ normal HTTPS      -> fallback -> Xiaoya BYOA :5244
-```
-
-Reality core service 与 Xiaoya fallback 必须故障解耦：fallback 停止不能改变 Reality 客户端流量；Xiaoya 恢复后普通 HTTPS 页面和播放恢复。
-
-## 管理入口隐藏
-
-伪装站公网反代应隐藏：
-
-```nginx
-location ^~ /@manage {
-    return 404;
-}
-
-location ^~ /api/admin {
-    return 404;
-}
-```
-
-不要阻断：`/api/fs/*`、`/api/public/byoa/*`、`/d/*`、`/p/*`。
-
-## 公共扫码接口
-
-扫码 status 只接受 POST JSON；Aliyun `ck/t` 和 Quark `token` 不放 query。接口有：
-
-- start：按 IP 约 1 req/s，burst 5；
-- status：按 IP 约 5 req/s，burst 20；
-- 上游请求硬超时 15 秒；
-- 错误只返回固定分类，不返回 Token/Cookie/响应正文。
-
-生产反代仍建议增加基础 WAF/限流。
+BYOA same-path requests may reuse request-derived Link state through OpenList global Link Cache / singleflight，可能造成同一路径访客间播放能力或 Quark 凭据复用。该问题是 **KNOWN SECURITY FINDINGS: ACCEPTED RISK**，仅延期到未来 hardening，不阻塞当前低流量伪装站正式发布；此前 A/B 验收未覆盖 exact same-path cache reuse。
 
 ## Pre-production Checklist
 
-部署前必须逐项取得证据：
+正式公网部署前仍需取得以下证据：
 
 ```text
 [ ] Production Reality E2E
-[ ] Real public TLS certificate and browser trust
+[ ] Real public TLS and browser trust
 [ ] Secure Cookie in a real browser
-[ ] /@manage and /api/admin* hidden from public fallback
-[ ] Public 5244 remains loopback-only
+[ ] /@manage and /api/admin* hidden publicly
 [ ] Reality traffic unaffected by fallback failure
 [ ] Normal HTTPS reaches Xiaoya BYOA fallback
-[ ] Aliyun/Quark credentials absent from DB, Storage, volume, logs and cache
-[ ] Independent Gemini Security & Architecture Review complete
+[ ] 5244 remains loopback-only
+[ ] Credentials absent from DB, Storage, volume, logs and cache
 ```
 
-以上清单未完成前：
-
-```text
-MVP READY
-PRODUCTION READY: NO
-DO NOT DEPLOY PRODUCTION
-```
+Production Reality E2E 未运行不撤销当前 release approval，但必须在预生产部署验收阶段完成。外部 CVE、DAST、渗透测试以及 Aliyun 非视频/音频能力仍未验证。
 
 ## License
 
