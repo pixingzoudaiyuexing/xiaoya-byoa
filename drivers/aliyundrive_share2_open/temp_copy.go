@@ -17,7 +17,6 @@ import (
 
 const (
 	aliyunBYOATempFolderName = ".Xiaoya-BYOA-Temp"
-	aliyunCleanupImmediate   = "immediate"
 )
 
 var (
@@ -54,23 +53,28 @@ func (d *AliyundriveShare2Open) byoaTempCopyLink(ctx context.Context, file model
 	if err != nil {
 		return nil, err
 	}
+	if aliyunBYOACleanupEnabled() {
+		defer func() {
+			if err := aliyunBYOACleanup(ctx, client, accessToken, copied); err != nil {
+				log.Warn("[BYOA][Aliyun] temporary cleanup cleanup_success=false")
+			} else {
+				log.Info("[BYOA][Aliyun] temporary cleanup cleanup_success=true")
+			}
+		}()
+	}
 	url, err := aliyunBYOAVideoURL(ctx, client, accessToken, copied)
 	if err != nil {
 		return nil, err
-	}
-	cleanupMode := strings.ToLower(strings.TrimSpace(os.Getenv("BYOA_ALIYUN_TEMP_CLEANUP")))
-	if cleanupMode == aliyunCleanupImmediate {
-		if err := aliyunBYOACleanup(ctx, client, accessToken, copied); err != nil {
-			log.Warn("[BYOA][Aliyun] temporary cleanup cleanup_success=false")
-		} else {
-			log.Info("[BYOA][Aliyun] temporary cleanup cleanup_success=true")
-		}
 	}
 	log.Infof("[BYOA][Aliyun] temporary playback copy_created=true url_present=%t", url != "")
 	return &model.Link{URL: url, Header: http.Header{
 		"Referer":    []string{"https://www.alipan.com/"},
 		"User-Agent": []string{conf.UserAgent},
 	}}, nil
+}
+
+func aliyunBYOACleanupEnabled() bool {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("BYOA_ALIYUN_TEMP_CLEANUP"))) != "off"
 }
 
 func aliyunBYOARequest(ctx context.Context, client *resty.Client, token, shareToken, endpoint string, body interface{}, result interface{}) error {

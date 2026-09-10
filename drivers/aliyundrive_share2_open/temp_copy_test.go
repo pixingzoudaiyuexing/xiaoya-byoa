@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,10 +13,34 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
+type tempCopyScenario struct {
+	cleanupMode   *string
+	previewStatus int
+	deleteStatus  int
+}
+
+type tempCopyResult struct {
+	link      *model.Link
+	err       error
+	deleteIDs []string
+}
+
+func TestAliyunTempCopyCleanupDefaultsToImmediate(t *testing.T) {
+	result := runAliyunTempCopyLink(t, tempCopyScenario{})
+	if result.err != nil || result.link == nil {
+		t.Fatalf("default cleanup link=%v err=%v", result.link, result.err)
+	}
+	assertExactCleanupID(t, result.deleteIDs)
+}
+
 func TestAliyunTempCopyCleanupModeOffDoesNotDelete(t *testing.T) {
-	deleteIDs := runAliyunTempCopyLink(t, "off")
-	if len(deleteIDs) != 0 {
-		t.Fatalf("cleanup=off deleted file IDs %v, want none", deleteIDs)
+	off := "off"
+	result := runAliyunTempCopyLink(t, tempCopyScenario{cleanupMode: &off})
+	if result.err != nil || result.link == nil {
+		t.Fatalf("cleanup=off link=%v err=%v", result.link, result.err)
+	}
+	if len(result.deleteIDs) != 0 {
+		t.Fatalf("cleanup=off deleted file IDs %v, want none", result.deleteIDs)
 	}
 }
 
@@ -37,15 +62,65 @@ func TestAliyunTempCopyUsesBrowserTokenEndpoints(t *testing.T) {
 }
 
 func TestAliyunTempCopyCleanupModeImmediateDeletesExactNewFile(t *testing.T) {
-	deleteIDs := runAliyunTempCopyLink(t, "immediate")
+	immediate := "immediate"
+	result := runAliyunTempCopyLink(t, tempCopyScenario{cleanupMode: &immediate})
+	if result.err != nil || result.link == nil {
+		t.Fatalf("cleanup=immediate link=%v err=%v", result.link, result.err)
+	}
+	assertExactCleanupID(t, result.deleteIDs)
+}
+
+func TestAliyunTempCopyReturnsPlaybackWhenCleanupFails(t *testing.T) {
+	result := runAliyunTempCopyLink(t, tempCopyScenario{deleteStatus: http.StatusInternalServerError})
+	if result.err != nil || result.link == nil || result.link.URL != "https://example.com/full.m3u8" {
+		t.Fatalf("cleanup failure suppressed playback: link=%v err=%v", result.link, result.err)
+	}
+	assertExactCleanupID(t, result.deleteIDs)
+}
+
+func TestAliyunTempCopyCleansUpWhenPlaybackFails(t *testing.T) {
+	result := runAliyunTempCopyLink(t, tempCopyScenario{previewStatus: http.StatusBadGateway})
+	if result.err == nil || !strings.Contains(result.err.Error(), "http status: 502") {
+		t.Fatalf("playback error = %v, want sanitized 502 error", result.err)
+	}
+	assertExactCleanupID(t, result.deleteIDs)
+}
+
+func TestAliyunTempCopyPreservesPlaybackErrorWhenCleanupFails(t *testing.T) {
+	result := runAliyunTempCopyLink(t, tempCopyScenario{
+		previewStatus: http.StatusBadGateway,
+		deleteStatus:  http.StatusInternalServerError,
+	})
+	if result.err == nil || result.err.Error() != "aliyun temporary operation http status: 502" {
+		t.Fatalf("error = %v, want original playback error", result.err)
+	}
+	assertExactCleanupID(t, result.deleteIDs)
+}
+
+func assertExactCleanupID(t *testing.T, deleteIDs []string) {
+	t.Helper()
 	if len(deleteIDs) != 1 || deleteIDs[0] != "new-copy-id" {
-		t.Fatalf("cleanup=immediate deleted file IDs %v, want [new-copy-id]", deleteIDs)
+		t.Fatalf("cleanup deleted file IDs %v, want [new-copy-id]", deleteIDs)
 	}
 }
 
-func runAliyunTempCopyLink(t *testing.T, cleanupMode string) []string {
+func runAliyunTempCopyLink(t *testing.T, scenario tempCopyScenario) tempCopyResult {
 	t.Helper()
-	t.Setenv("BYOA_ALIYUN_TEMP_CLEANUP", cleanupMode)
+	oldMode, hadMode := os.LookupEnv("BYOA_ALIYUN_TEMP_CLEANUP")
+	if scenario.cleanupMode == nil {
+		if err := os.Unsetenv("BYOA_ALIYUN_TEMP_CLEANUP"); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		t.Setenv("BYOA_ALIYUN_TEMP_CLEANUP", *scenario.cleanupMode)
+	}
+	t.Cleanup(func() {
+		if hadMode {
+			_ = os.Setenv("BYOA_ALIYUN_TEMP_CLEANUP", oldMode)
+		} else {
+			_ = os.Unsetenv("BYOA_ALIYUN_TEMP_CLEANUP")
+		}
+	})
 	var deleteIDs []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -57,6 +132,10 @@ func runAliyunTempCopyLink(t *testing.T, cleanupMode string) []string {
 		case "/copy":
 			_, _ = w.Write([]byte(`{"responses":[{"body":{"file_id":"new-copy-id"}}]}`))
 		case "/preview":
+			if scenario.previewStatus != 0 {
+				w.WriteHeader(scenario.previewStatus)
+				return
+			}
 			_, _ = w.Write([]byte(`{"video_preview_play_info":{"live_transcoding_task_list":[{"template_id":"HD","status":"finished","url":"https://example.com/full.m3u8"}]}}`))
 		case "/delete":
 			var body struct {
@@ -66,6 +145,10 @@ func runAliyunTempCopyLink(t *testing.T, cleanupMode string) []string {
 				t.Fatalf("decode cleanup request: %v", err)
 			}
 			deleteIDs = append(deleteIDs, body.FileID)
+			if scenario.deleteStatus != 0 {
+				w.WriteHeader(scenario.deleteStatus)
+				return
+			}
 			_, _ = w.Write([]byte(`{}`))
 		default:
 			http.NotFound(w, r)
@@ -85,13 +168,7 @@ func runAliyunTempCopyLink(t *testing.T, cleanupMode string) []string {
 	driver := &AliyundriveShare2Open{Addition: Addition{ShareId: "share-id"}}
 	file := &model.Object{ID: "source-file-id", Name: "movie.mkv"}
 	link, err := driver.byoaTempCopyLink(context.Background(), file, "visitor-token")
-	if err != nil {
-		t.Fatalf("byoaTempCopyLink() error = %v", err)
-	}
-	if link.URL != "https://example.com/full.m3u8" {
-		t.Fatalf("link URL = %q", link.URL)
-	}
-	return deleteIDs
+	return tempCopyResult{link: link, err: err, deleteIDs: deleteIDs}
 }
 
 func TestAliyunTempCopyCleanupRequiresExactCreatedFile(t *testing.T) {

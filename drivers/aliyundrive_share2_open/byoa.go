@@ -19,9 +19,9 @@ var (
 	aliyunBYOASharePreviewEndpoint  = "https://api.alipan.com/v2/file/get_share_link_video_preview_play_info"
 )
 
-// byoaDirectLink 使用当前浏览器自己的阿里普通 Access Token，直接从分享接口获取播放地址。
-// 该路径不转存到个人盘、不依赖 AliyundriveOpen、不使用服务器账号池和账号相关 Link Cache。
-// MVP 中 Access Token 过期后直接要求用户重新扫码，不做服务端 Refresh Token 生命周期管理。
+// byoaDirectLink 使用当前浏览器自己的阿里普通 Access Token，将公开分享文件复制到
+// 当前访客账号的专用临时目录，再从访客 drive 获取完整播放地址。默认仅回收本次复制
+// 返回的精确 file_id；不使用服务器共享账号池，也不持久化 Refresh Token。
 func (d *AliyundriveShare2Open) byoaDirectLink(ctx context.Context, file model.Obj, accessToken string) (*model.Link, error) {
 	if d.ShareToken == "" {
 		if err := d.getShareToken(); err != nil {
