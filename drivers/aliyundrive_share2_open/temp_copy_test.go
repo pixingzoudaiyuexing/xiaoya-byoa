@@ -19,7 +19,7 @@ func TestAliyunTempCopyCleanupModeOffDoesNotDelete(t *testing.T) {
 	}
 }
 
-func TestAliyunTempCopyUsesOpenAPIForUserScopedOperations(t *testing.T) {
+func TestAliyunTempCopyUsesBrowserTokenEndpoints(t *testing.T) {
 	for name, endpoint := range map[string]string{
 		"drive info":    aliyunDriveInfoEndpoint,
 		"folder list":   aliyunFileListEndpoint,
@@ -27,8 +27,8 @@ func TestAliyunTempCopyUsesOpenAPIForUserScopedOperations(t *testing.T) {
 		"video preview": aliyunFilePreviewEndpoint,
 		"cleanup":       aliyunFileDeleteEndpoint,
 	} {
-		if !strings.HasPrefix(endpoint, "https://openapi.alipan.com/") {
-			t.Errorf("%s endpoint = %q, want openapi.alipan.com", name, endpoint)
+		if !strings.HasPrefix(endpoint, "https://api.alipan.com/") {
+			t.Errorf("%s endpoint = %q, want api.alipan.com", name, endpoint)
 		}
 	}
 	if !strings.HasPrefix(aliyunFileCopyEndpoint, "https://api.alipan.com/") {

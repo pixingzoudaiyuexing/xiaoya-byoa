@@ -21,12 +21,12 @@ const (
 )
 
 var (
-	aliyunDriveInfoEndpoint   = "https://openapi.alipan.com/adrive/v1.0/user/getDriveInfo"
-	aliyunFileListEndpoint    = "https://openapi.alipan.com/adrive/v1.0/openFile/list"
-	aliyunFileCreateEndpoint  = "https://openapi.alipan.com/adrive/v1.0/openFile/create"
+	aliyunDriveInfoEndpoint   = "https://api.alipan.com/v2/user/get"
+	aliyunFileListEndpoint    = "https://api.alipan.com/v2/file/list"
+	aliyunFileCreateEndpoint  = "https://api.alipan.com/adrive/v2/file/createWithFolders"
 	aliyunFileCopyEndpoint    = "https://api.alipan.com/adrive/v4/batch"
-	aliyunFilePreviewEndpoint = "https://openapi.alipan.com/adrive/v1.0/openFile/getVideoPreviewPlayInfo"
-	aliyunFileDeleteEndpoint  = "https://openapi.alipan.com/adrive/v1.0/openFile/delete"
+	aliyunFilePreviewEndpoint = "https://api.alipan.com/v2/file/get_video_preview_play_info"
+	aliyunFileDeleteEndpoint  = "https://api.alipan.com/v2/recyclebin/trash"
 )
 
 type aliyunTempCopy struct {
