@@ -1,6 +1,6 @@
 # Xiaoya BYOA
 
-Xiaoya BYOA 面向 Reality fallback 伪装站：访客可匿名浏览公开目录，播放 Aliyun 或 Quark 媒体时由当前浏览器扫码授权。
+Xiaoya BYOA ：访客可匿名浏览公开目录，播放 Aliyun 或 Quark 媒体时由当前浏览器扫码授权。
 
 正式镜像：`ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest`，支持 `linux/amd64` 和 `linux/arm64`。RealityPanel 固定使用 `latest`。
 
