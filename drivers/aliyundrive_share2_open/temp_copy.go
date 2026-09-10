@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 
 const (
 	aliyunBYOATempFolderName = ".Xiaoya-BYOA-Temp"
+	aliyunCleanupImmediate   = "immediate"
 )
 
 var (
@@ -52,14 +54,17 @@ func (d *AliyundriveShare2Open) byoaTempCopyLink(ctx context.Context, file model
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if err := aliyunBYOACleanup(ctx, client, accessToken, copied); err != nil {
-			log.Warnf("[BYOA][Aliyun] temporary cleanup failed success=%t", err == nil)
-		}
-	}()
 	url, err := aliyunBYOAVideoURL(ctx, client, accessToken, copied)
 	if err != nil {
 		return nil, err
+	}
+	cleanupMode := strings.ToLower(strings.TrimSpace(os.Getenv("BYOA_ALIYUN_TEMP_CLEANUP")))
+	if cleanupMode == aliyunCleanupImmediate {
+		if err := aliyunBYOACleanup(ctx, client, accessToken, copied); err != nil {
+			log.Warn("[BYOA][Aliyun] temporary cleanup cleanup_success=false")
+		} else {
+			log.Info("[BYOA][Aliyun] temporary cleanup cleanup_success=true")
+		}
 	}
 	log.Infof("[BYOA][Aliyun] temporary playback copy_created=true url_present=%t", url != "")
 	return &model.Link{URL: url, Header: http.Header{
