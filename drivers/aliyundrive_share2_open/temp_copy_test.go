@@ -112,6 +112,138 @@ func TestAliyunTempCopyCleanupSurvivesCanceledParent(t *testing.T) {
 	assertExactCleanupID(t, result.deleteIDs)
 }
 
+func TestAliyunTempCopyFailureInvalidatesOnlyCurrentDriveFolder(t *testing.T) {
+	driveID := "stale-drive-" + t.Name()
+	otherDriveID := "other-drive-" + t.Name()
+	aliyunTempFolderCache.Store(driveID, "stale-folder")
+	aliyunTempFolderCache.Store(otherDriveID, "other-folder")
+	t.Cleanup(func() {
+		aliyunTempFolderCache.Delete(driveID)
+		aliyunTempFolderCache.Delete(otherDriveID)
+	})
+
+	var copyCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/drive":
+			_, _ = fmt.Fprintf(w, `{"default_drive_id":%q}`, driveID)
+		case "/copy":
+			copyCalls.Add(1)
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"code":"CopyFailed","message":"private detail"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	restore := setAliyunTempCopyEndpoints(t, server.URL)
+	defer restore()
+
+	driver := &AliyundriveShare2Open{Addition: Addition{ShareId: "share", ShareToken: "ready"}}
+	_, err := driver.byoaTempCopyLink(context.Background(), &model.Object{ID: "source"}, "token")
+	if err == nil || err.Error() != "aliyun temporary operation http status: 502" {
+		t.Fatalf("copy error = %v, want original sanitized error", err)
+	}
+	if copyCalls.Load() != 1 {
+		t.Fatalf("copy calls = %d, want 1 without same-request retry", copyCalls.Load())
+	}
+	if _, ok := aliyunTempFolderCache.Load(driveID); ok {
+		t.Fatal("stale current-drive folder cache was not invalidated")
+	}
+	if got, ok := aliyunTempFolderCache.Load(otherDriveID); !ok || got != "other-folder" {
+		t.Fatalf("unrelated cache entry = %v, %t", got, ok)
+	}
+}
+
+func TestAliyunTempCopyNextRequestSelfHealsStaleFolder(t *testing.T) {
+	off := "off"
+	t.Setenv("BYOA_ALIYUN_TEMP_CLEANUP", off)
+	driveID := "self-heal-drive-" + t.Name()
+	aliyunTempFolderCache.Store(driveID, "stale-folder")
+	t.Cleanup(func() { aliyunTempFolderCache.Delete(driveID) })
+
+	var copyCalls atomic.Int32
+	var listCalls atomic.Int32
+	var createCalls atomic.Int32
+	var copyParentIDs []string
+	var copyMu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/drive":
+			_, _ = fmt.Fprintf(w, `{"default_drive_id":%q}`, driveID)
+		case "/list":
+			listCalls.Add(1)
+			_, _ = w.Write([]byte(`{"items":[],"next_marker":""}`))
+		case "/create":
+			createCalls.Add(1)
+			_, _ = w.Write([]byte(`{"file_id":"new-folder"}`))
+		case "/copy":
+			var body struct {
+				Requests []struct {
+					Body struct {
+						ParentID string `json:"to_parent_file_id"`
+					} `json:"body"`
+				} `json:"requests"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode copy request: %v", err)
+			}
+			parentID := body.Requests[0].Body.ParentID
+			copyMu.Lock()
+			copyParentIDs = append(copyParentIDs, parentID)
+			copyMu.Unlock()
+			if copyCalls.Add(1) == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			_, _ = w.Write([]byte(`{"responses":[{"body":{"file_id":"new-copy-id"}}]}`))
+		case "/preview":
+			_, _ = w.Write([]byte(`{"video_preview_play_info":{"live_transcoding_task_list":[{"template_id":"HD","status":"finished","url":"https://example.com/full.m3u8"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	restore := setAliyunTempCopyEndpoints(t, server.URL)
+	defer restore()
+
+	driver := &AliyundriveShare2Open{Addition: Addition{ShareId: "share", ShareToken: "ready"}}
+	file := &model.Object{ID: "source"}
+	if _, err := driver.byoaTempCopyLink(context.Background(), file, "token"); err == nil {
+		t.Fatal("first request expected copy failure")
+	}
+	if copyCalls.Load() != 1 {
+		t.Fatalf("first request copy calls = %d, want 1", copyCalls.Load())
+	}
+	link, err := driver.byoaTempCopyLink(context.Background(), file, "token")
+	if err != nil || link == nil || link.URL != "https://example.com/full.m3u8" {
+		t.Fatalf("second request link=%v err=%v", link, err)
+	}
+	if listCalls.Load() != 1 || createCalls.Load() != 1 || copyCalls.Load() != 2 {
+		t.Fatalf("list=%d create=%d copy=%d", listCalls.Load(), createCalls.Load(), copyCalls.Load())
+	}
+	if len(copyParentIDs) != 2 || copyParentIDs[0] != "stale-folder" || copyParentIDs[1] != "new-folder" {
+		t.Fatalf("copy parent IDs = %v", copyParentIDs)
+	}
+	if got, ok := aliyunTempFolderCache.Load(driveID); !ok || got != "new-folder" {
+		t.Fatalf("healed cache = %v, %t", got, ok)
+	}
+}
+
+func setAliyunTempCopyEndpoints(t *testing.T, baseURL string) func() {
+	t.Helper()
+	oldDrive, oldList, oldCreate := aliyunDriveInfoEndpoint, aliyunFileListEndpoint, aliyunFileCreateEndpoint
+	oldCopy, oldPreview, oldDelete := aliyunFileCopyEndpoint, aliyunFilePreviewEndpoint, aliyunFileDeleteEndpoint
+	aliyunDriveInfoEndpoint, aliyunFileListEndpoint, aliyunFileCreateEndpoint = baseURL+"/drive", baseURL+"/list", baseURL+"/create"
+	aliyunFileCopyEndpoint, aliyunFilePreviewEndpoint, aliyunFileDeleteEndpoint = baseURL+"/copy", baseURL+"/preview", baseURL+"/delete"
+	return func() {
+		aliyunDriveInfoEndpoint, aliyunFileListEndpoint, aliyunFileCreateEndpoint = oldDrive, oldList, oldCreate
+		aliyunFileCopyEndpoint, aliyunFilePreviewEndpoint, aliyunFileDeleteEndpoint = oldCopy, oldPreview, oldDelete
+	}
+}
+
 func TestAliyunBYOAAccessTokenErrorsRequireReauth(t *testing.T) {
 	for _, code := range []string{"AccessTokenInvalid", "AccessTokenExpired"} {
 		t.Run(code, func(t *testing.T) {

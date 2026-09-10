@@ -74,6 +74,7 @@ func (d *AliyundriveShare2Open) byoaTempCopyLink(ctx context.Context, file model
 	copied := aliyunTempCopy{driveID: driveID, parentID: parentID}
 	copied.fileID, err = d.byoaCopyShareFile(ctx, client, accessToken, driveID, parentID, file.GetID())
 	if err != nil {
+		aliyunTempFolderCache.Delete(driveID)
 		return nil, err
 	}
 	if aliyunBYOACleanupEnabled() {
