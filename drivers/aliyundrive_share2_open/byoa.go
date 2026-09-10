@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
-	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/go-resty/resty/v2"
 	log "github.com/sirupsen/logrus"
@@ -29,52 +29,15 @@ func (d *AliyundriveShare2Open) byoaDirectLink(ctx context.Context, file model.O
 		}
 	}
 
-	driveID, err := d.byoaShareDriveID()
+	link, err := d.byoaTempCopyLink(ctx, file, accessToken)
 	if err != nil {
-		return nil, err
-	}
-
-	requestLink := func() (string, *ErrorResp, error) {
-		return requestAliyunBYOAShareURL(base.GetAliyunRestyClient(), ctx, accessToken, d.ShareToken, driveID, file.GetID(), d.ShareId)
-	}
-
-	url, apiErr, err := requestLink()
-	if err != nil {
-		return nil, err
-	}
-
-	if apiErr != nil && apiErr.Code == "ShareLinkTokenInvalid" {
-		if err := d.getShareToken(); err != nil {
-			return nil, err
-		}
-		url, apiErr, err = requestLink()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if apiErr != nil && apiErr.Code != "" {
-		if apiErr.Code == "AccessTokenInvalid" || apiErr.Code == "AccessTokenExpired" {
+		if strings.Contains(err.Error(), "AccessTokenInvalid") || strings.Contains(err.Error(), "AccessTokenExpired") {
 			return nil, &byoa.AuthRequiredError{Provider: byoa.ProviderAliyun}
 		}
-		if apiErr.Message != "" {
-			return nil, errors.New(apiErr.Code + ": " + apiErr.Message)
-		}
-		return nil, errors.New(apiErr.Code)
+		return nil, err
 	}
-
-	if url == "" {
-		return nil, errors.New("aliyun share playback URL unavailable")
-	}
-
-	log.Infof("[BYOA][Aliyun] 获取分享播放链接 %v %v", file.GetName(), file.GetSize())
-	return &model.Link{
-		URL: url,
-		Header: http.Header{
-			"Referer":    []string{"https://www.alipan.com/"},
-			"User-Agent": []string{conf.UserAgent},
-		},
-	}, nil
+	log.Infof("[BYOA][Aliyun] 获取临时转存播放链接 %v %v", file.GetName(), file.GetSize())
+	return link, nil
 }
 
 func requestAliyunBYOAShareURL(client *resty.Client, ctx context.Context, accessToken, shareToken, driveID, fileID, shareID string) (string, *ErrorResp, error) {
