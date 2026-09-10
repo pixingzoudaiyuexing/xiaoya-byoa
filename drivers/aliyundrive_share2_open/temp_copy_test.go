@@ -19,6 +19,23 @@ func TestAliyunTempCopyCleanupModeOffDoesNotDelete(t *testing.T) {
 	}
 }
 
+func TestAliyunTempCopyUsesOpenAPIForUserScopedOperations(t *testing.T) {
+	for name, endpoint := range map[string]string{
+		"drive info":    aliyunDriveInfoEndpoint,
+		"folder list":   aliyunFileListEndpoint,
+		"folder create": aliyunFileCreateEndpoint,
+		"video preview": aliyunFilePreviewEndpoint,
+		"cleanup":       aliyunFileDeleteEndpoint,
+	} {
+		if !strings.HasPrefix(endpoint, "https://openapi.alipan.com/") {
+			t.Errorf("%s endpoint = %q, want openapi.alipan.com", name, endpoint)
+		}
+	}
+	if !strings.HasPrefix(aliyunFileCopyEndpoint, "https://api.alipan.com/") {
+		t.Fatalf("copy endpoint = %q, want api.alipan.com", aliyunFileCopyEndpoint)
+	}
+}
+
 func TestAliyunTempCopyCleanupModeImmediateDeletesExactNewFile(t *testing.T) {
 	deleteIDs := runAliyunTempCopyLink(t, "immediate")
 	if len(deleteIDs) != 1 || deleteIDs[0] != "new-copy-id" {
