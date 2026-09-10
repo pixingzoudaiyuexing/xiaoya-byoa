@@ -8,7 +8,6 @@ import (
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
-	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/go-resty/resty/v2"
 	log "github.com/sirupsen/logrus"
@@ -19,9 +18,9 @@ var (
 	aliyunBYOASharePreviewEndpoint  = "https://api.alipan.com/v2/file/get_share_link_video_preview_play_info"
 )
 
-// byoaDirectLink 使用当前浏览器自己的阿里普通 Access Token，直接从分享接口获取播放地址。
-// 该路径不转存到个人盘、不依赖 AliyundriveOpen、不使用服务器账号池和账号相关 Link Cache。
-// MVP 中 Access Token 过期后直接要求用户重新扫码，不做服务端 Refresh Token 生命周期管理。
+// byoaDirectLink 使用当前浏览器自己的阿里普通 Access Token，将公开分享文件复制到
+// 当前访客账号的专用临时目录，再从访客 drive 获取完整播放地址。默认仅回收本次复制
+// 返回的精确 file_id；不使用服务器共享账号池，也不持久化 Refresh Token。
 func (d *AliyundriveShare2Open) byoaDirectLink(ctx context.Context, file model.Obj, accessToken string) (*model.Link, error) {
 	if d.ShareToken == "" {
 		if err := d.getShareToken(); err != nil {
@@ -29,52 +28,15 @@ func (d *AliyundriveShare2Open) byoaDirectLink(ctx context.Context, file model.O
 		}
 	}
 
-	driveID, err := d.byoaShareDriveID()
+	link, err := d.byoaTempCopyLink(ctx, file, accessToken)
 	if err != nil {
-		return nil, err
-	}
-
-	requestLink := func() (string, *ErrorResp, error) {
-		return requestAliyunBYOAShareURL(base.GetAliyunRestyClient(), ctx, accessToken, d.ShareToken, driveID, file.GetID(), d.ShareId)
-	}
-
-	url, apiErr, err := requestLink()
-	if err != nil {
-		return nil, err
-	}
-
-	if apiErr != nil && apiErr.Code == "ShareLinkTokenInvalid" {
-		if err := d.getShareToken(); err != nil {
-			return nil, err
-		}
-		url, apiErr, err = requestLink()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if apiErr != nil && apiErr.Code != "" {
-		if apiErr.Code == "AccessTokenInvalid" || apiErr.Code == "AccessTokenExpired" {
+		if isAliyunBYOAAuthExpired(err) {
 			return nil, &byoa.AuthRequiredError{Provider: byoa.ProviderAliyun}
 		}
-		if apiErr.Message != "" {
-			return nil, errors.New(apiErr.Code + ": " + apiErr.Message)
-		}
-		return nil, errors.New(apiErr.Code)
+		return nil, err
 	}
-
-	if url == "" {
-		return nil, errors.New("aliyun share playback URL unavailable")
-	}
-
-	log.Infof("[BYOA][Aliyun] 获取分享播放链接 %v %v", file.GetName(), file.GetSize())
-	return &model.Link{
-		URL: url,
-		Header: http.Header{
-			"Referer":    []string{"https://www.alipan.com/"},
-			"User-Agent": []string{conf.UserAgent},
-		},
-	}, nil
+	log.Infof("[BYOA][Aliyun] 获取临时转存播放链接 %v %v", file.GetName(), file.GetSize())
+	return link, nil
 }
 
 func requestAliyunBYOAShareURL(client *resty.Client, ctx context.Context, accessToken, shareToken, driveID, fileID, shareID string) (string, *ErrorResp, error) {
