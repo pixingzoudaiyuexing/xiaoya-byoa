@@ -3,20 +3,27 @@ package aliyundrive_share2_open
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/go-resty/resty/v2"
 )
 
 type tempCopyScenario struct {
-	cleanupMode   *string
-	previewStatus int
-	deleteStatus  int
+	cleanupMode           *string
+	previewStatus         int
+	deleteStatus          int
+	cancelParentAfterCopy bool
 }
 
 type tempCopyResult struct {
@@ -97,6 +104,206 @@ func TestAliyunTempCopyPreservesPlaybackErrorWhenCleanupFails(t *testing.T) {
 	assertExactCleanupID(t, result.deleteIDs)
 }
 
+func TestAliyunTempCopyCleanupSurvivesCanceledParent(t *testing.T) {
+	result := runAliyunTempCopyLink(t, tempCopyScenario{cancelParentAfterCopy: true})
+	if result.err == nil {
+		t.Fatal("expected playback to fail after parent cancellation")
+	}
+	assertExactCleanupID(t, result.deleteIDs)
+}
+
+func TestAliyunBYOAAccessTokenErrorsRequireReauth(t *testing.T) {
+	for _, code := range []string{"AccessTokenInvalid", "AccessTokenExpired"} {
+		t.Run(code, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = fmt.Fprintf(w, `{"code":%q,"message":"secret upstream detail"}`, code)
+			}))
+			defer server.Close()
+			oldDrive := aliyunDriveInfoEndpoint
+			aliyunDriveInfoEndpoint = server.URL
+			t.Cleanup(func() { aliyunDriveInfoEndpoint = oldDrive })
+
+			driver := &AliyundriveShare2Open{Addition: Addition{ShareId: "share", ShareToken: "ready"}}
+			_, err := driver.byoaDirectLink(context.Background(), &model.Object{ID: "source"}, "visitor-token")
+			var authErr *byoa.AuthRequiredError
+			if !errors.As(err, &authErr) || authErr.Provider != byoa.ProviderAliyun {
+				t.Fatalf("error = %T %v, want Aliyun AuthRequiredError", err, err)
+			}
+			if strings.Contains(err.Error(), "secret upstream detail") {
+				t.Fatalf("upstream message leaked: %v", err)
+			}
+		})
+	}
+}
+
+func TestAliyunBYOAGenericErrorIsSanitized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":"InternalError","message":"private upstream body"}`))
+	}))
+	defer server.Close()
+	err := aliyunBYOARequest(context.Background(), resty.New(), "token", "", server.URL, map[string]string{}, &struct{}{})
+	if err == nil || !strings.Contains(err.Error(), "http status: 502") {
+		t.Fatalf("error = %v, want sanitized status", err)
+	}
+	if strings.Contains(err.Error(), "private upstream body") || strings.Contains(err.Error(), "InternalError") {
+		t.Fatalf("upstream response leaked: %v", err)
+	}
+}
+
+func TestAliyunTempFolderCachesResolvedFolder(t *testing.T) {
+	var listCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		listCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"file_id":"cached-folder","name":".Xiaoya-BYOA-Temp","type":"folder"}],"next_marker":""}`))
+	}))
+	defer server.Close()
+	oldList, oldCreate := aliyunFileListEndpoint, aliyunFileCreateEndpoint
+	aliyunFileListEndpoint, aliyunFileCreateEndpoint = server.URL, server.URL
+	t.Cleanup(func() { aliyunFileListEndpoint, aliyunFileCreateEndpoint = oldList, oldCreate })
+
+	driveID := "cache-" + t.Name()
+	first, err := aliyunBYOATempFolder(context.Background(), resty.New(), "token", driveID)
+	if err != nil || first != "cached-folder" {
+		t.Fatalf("first resolve = %q, %v", first, err)
+	}
+	before := listCalls.Load()
+	second, err := aliyunBYOATempFolder(context.Background(), resty.New(), "different-token", driveID)
+	if err != nil || second != first || listCalls.Load() != before {
+		t.Fatalf("cache hit = %q, %v, calls %d -> %d", second, err, before, listCalls.Load())
+	}
+}
+
+func TestAliyunTempFolderFindsFolderAfterFirstPage(t *testing.T) {
+	var listCalls atomic.Int32
+	firstPage := make([]map[string]string, 100)
+	for i := range firstPage {
+		firstPage[i] = map[string]string{"file_id": fmt.Sprintf("other-%d", i), "name": fmt.Sprintf("other-%d", i), "type": "folder"}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["marker"] == "page-2" {
+			listCalls.Add(1)
+			_, _ = w.Write([]byte(`{"items":[{"file_id":"second-page-folder","name":".Xiaoya-BYOA-Temp","type":"folder"}],"next_marker":""}`))
+			return
+		}
+		listCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": firstPage, "next_marker": "page-2"})
+	}))
+	defer server.Close()
+	oldList, oldCreate := aliyunFileListEndpoint, aliyunFileCreateEndpoint
+	aliyunFileListEndpoint, aliyunFileCreateEndpoint = server.URL, server.URL+"/unexpected-create"
+	t.Cleanup(func() { aliyunFileListEndpoint, aliyunFileCreateEndpoint = oldList, oldCreate })
+
+	folder, err := aliyunBYOATempFolder(context.Background(), resty.New(), "token", "paged-"+t.Name())
+	if err != nil || folder != "second-page-folder" || listCalls.Load() != 2 {
+		t.Fatalf("folder=%q err=%v listCalls=%d", folder, err, listCalls.Load())
+	}
+}
+
+func TestAliyunTempFolderCreatesAndCachesMissingFolder(t *testing.T) {
+	var listCalls atomic.Int32
+	var createCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/list":
+			listCalls.Add(1)
+			_, _ = w.Write([]byte(`{"items":[],"next_marker":""}`))
+		case "/create":
+			createCalls.Add(1)
+			_, _ = w.Write([]byte(`{"file_id":"created-folder"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	oldList, oldCreate := aliyunFileListEndpoint, aliyunFileCreateEndpoint
+	aliyunFileListEndpoint, aliyunFileCreateEndpoint = server.URL+"/list", server.URL+"/create"
+	t.Cleanup(func() { aliyunFileListEndpoint, aliyunFileCreateEndpoint = oldList, oldCreate })
+
+	driveID := "create-" + t.Name()
+	for i := 0; i < 2; i++ {
+		folder, err := aliyunBYOATempFolder(context.Background(), resty.New(), "token", driveID)
+		if err != nil || folder != "created-folder" {
+			t.Fatalf("resolve %d = %q, %v", i, folder, err)
+		}
+	}
+	if listCalls.Load() != 1 || createCalls.Load() != 1 {
+		t.Fatalf("list calls=%d create calls=%d, want 1 each", listCalls.Load(), createCalls.Load())
+	}
+}
+
+func TestAliyunTempFolderSerializesConcurrentCreation(t *testing.T) {
+	var listCalls atomic.Int32
+	var createCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/list":
+			listCalls.Add(1)
+			_, _ = w.Write([]byte(`{"items":[],"next_marker":""}`))
+		case "/create":
+			createCalls.Add(1)
+			_, _ = w.Write([]byte(`{"file_id":"single-folder"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	oldList, oldCreate := aliyunFileListEndpoint, aliyunFileCreateEndpoint
+	aliyunFileListEndpoint, aliyunFileCreateEndpoint = server.URL+"/list", server.URL+"/create"
+	t.Cleanup(func() { aliyunFileListEndpoint, aliyunFileCreateEndpoint = oldList, oldCreate })
+
+	driveID := "concurrent-" + t.Name()
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			folder, err := aliyunBYOATempFolder(context.Background(), resty.New(), "token", driveID)
+			if err != nil || folder != "single-folder" {
+				errs <- fmt.Errorf("folder=%q err=%v", folder, err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if listCalls.Load() != 1 || createCalls.Load() != 1 {
+		t.Fatalf("list calls=%d create calls=%d, want 1 each", listCalls.Load(), createCalls.Load())
+	}
+}
+
+func TestAliyunTempCopyClientHasBoundedTimeout(t *testing.T) {
+	client := newAliyunBYOAClient()
+	if got := client.GetClient().Timeout; got <= 0 || got > 15*time.Second {
+		t.Fatalf("HTTP timeout = %v, want >0 and <=15s", got)
+	}
+}
+
+func TestAliyunCleanupContextHasFiniteDeadline(t *testing.T) {
+	ctx, cancel := newAliyunBYOACleanupContext()
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("cleanup context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > 10*time.Second {
+		t.Fatalf("cleanup deadline remaining = %v", remaining)
+	}
+}
+
 func assertExactCleanupID(t *testing.T, deleteIDs []string) {
 	t.Helper()
 	if len(deleteIDs) != 1 || deleteIDs[0] != "new-copy-id" {
@@ -122,16 +329,23 @@ func runAliyunTempCopyLink(t *testing.T, scenario tempCopyScenario) tempCopyResu
 		}
 	})
 	var deleteIDs []string
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/drive":
-			_, _ = w.Write([]byte(`{"default_drive_id":"visitor-drive"}`))
+			_, _ = fmt.Fprintf(w, `{"default_drive_id":%q}`, "visitor-"+t.Name())
+		case "/list":
+			_, _ = w.Write([]byte(`{"items":[],"next_marker":""}`))
 		case "/create":
 			_, _ = w.Write([]byte(`{"file_id":"byoa-temp-folder"}`))
 		case "/copy":
 			_, _ = w.Write([]byte(`{"responses":[{"body":{"file_id":"new-copy-id"}}]}`))
 		case "/preview":
+			if scenario.cancelParentAfterCopy {
+				cancel()
+			}
 			if scenario.previewStatus != 0 {
 				w.WriteHeader(scenario.previewStatus)
 				return
@@ -156,18 +370,18 @@ func runAliyunTempCopyLink(t *testing.T, scenario tempCopyScenario) tempCopyResu
 	}))
 	defer server.Close()
 
-	oldDrive, oldCreate := aliyunDriveInfoEndpoint, aliyunFileCreateEndpoint
+	oldDrive, oldList, oldCreate := aliyunDriveInfoEndpoint, aliyunFileListEndpoint, aliyunFileCreateEndpoint
 	oldCopy, oldPreview, oldDelete := aliyunFileCopyEndpoint, aliyunFilePreviewEndpoint, aliyunFileDeleteEndpoint
-	aliyunDriveInfoEndpoint, aliyunFileCreateEndpoint = server.URL+"/drive", server.URL+"/create"
+	aliyunDriveInfoEndpoint, aliyunFileListEndpoint, aliyunFileCreateEndpoint = server.URL+"/drive", server.URL+"/list", server.URL+"/create"
 	aliyunFileCopyEndpoint, aliyunFilePreviewEndpoint, aliyunFileDeleteEndpoint = server.URL+"/copy", server.URL+"/preview", server.URL+"/delete"
 	t.Cleanup(func() {
-		aliyunDriveInfoEndpoint, aliyunFileCreateEndpoint = oldDrive, oldCreate
+		aliyunDriveInfoEndpoint, aliyunFileListEndpoint, aliyunFileCreateEndpoint = oldDrive, oldList, oldCreate
 		aliyunFileCopyEndpoint, aliyunFilePreviewEndpoint, aliyunFileDeleteEndpoint = oldCopy, oldPreview, oldDelete
 	})
 
 	driver := &AliyundriveShare2Open{Addition: Addition{ShareId: "share-id"}}
 	file := &model.Object{ID: "source-file-id", Name: "movie.mkv"}
-	link, err := driver.byoaTempCopyLink(context.Background(), file, "visitor-token")
+	link, err := driver.byoaTempCopyLink(ctx, file, "visitor-token")
 	return tempCopyResult{link: link, err: err, deleteIDs: deleteIDs}
 }
 

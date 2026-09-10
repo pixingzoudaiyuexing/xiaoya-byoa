@@ -8,6 +8,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
@@ -17,6 +19,8 @@ import (
 
 const (
 	aliyunBYOATempFolderName = ".Xiaoya-BYOA-Temp"
+	aliyunBYOAHTTPTimeout    = 15 * time.Second
+	aliyunBYOACleanupTimeout = 10 * time.Second
 )
 
 var (
@@ -27,6 +31,25 @@ var (
 	aliyunFilePreviewEndpoint = "https://api.alipan.com/v2/file/get_video_preview_play_info"
 	aliyunFileDeleteEndpoint  = "https://api.alipan.com/v2/recyclebin/trash"
 )
+
+var (
+	aliyunTempFolderCache sync.Map // driveID -> folderID
+	aliyunTempFolderLocks sync.Map // driveID -> *sync.Mutex
+)
+
+type aliyunBYOAAPIError struct {
+	code       string
+	httpStatus int
+}
+
+func (e *aliyunBYOAAPIError) Error() string {
+	return fmt.Sprintf("aliyun temporary operation http status: %d", e.httpStatus)
+}
+
+func isAliyunBYOAAuthExpired(err error) bool {
+	var apiErr *aliyunBYOAAPIError
+	return errors.As(err, &apiErr) && (apiErr.code == "AccessTokenInvalid" || apiErr.code == "AccessTokenExpired")
+}
 
 type aliyunTempCopy struct {
 	driveID  string
@@ -39,7 +62,7 @@ func (c aliyunTempCopy) valid() bool {
 }
 
 func (d *AliyundriveShare2Open) byoaTempCopyLink(ctx context.Context, file model.Obj, accessToken string) (*model.Link, error) {
-	client := resty.New()
+	client := newAliyunBYOAClient()
 	driveID, err := aliyunBYOAUserDriveID(ctx, client, accessToken)
 	if err != nil {
 		return nil, err
@@ -55,7 +78,9 @@ func (d *AliyundriveShare2Open) byoaTempCopyLink(ctx context.Context, file model
 	}
 	if aliyunBYOACleanupEnabled() {
 		defer func() {
-			if err := aliyunBYOACleanup(ctx, client, accessToken, copied); err != nil {
+			cleanupCtx, cancel := newAliyunBYOACleanupContext()
+			defer cancel()
+			if err := aliyunBYOACleanup(cleanupCtx, client, accessToken, copied); err != nil {
 				log.Warn("[BYOA][Aliyun] temporary cleanup cleanup_success=false")
 			} else {
 				log.Info("[BYOA][Aliyun] temporary cleanup cleanup_success=true")
@@ -73,13 +98,22 @@ func (d *AliyundriveShare2Open) byoaTempCopyLink(ctx context.Context, file model
 	}}, nil
 }
 
+func newAliyunBYOAClient() *resty.Client {
+	return resty.New().SetTimeout(aliyunBYOAHTTPTimeout)
+}
+
+func newAliyunBYOACleanupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), aliyunBYOACleanupTimeout)
+}
+
 func aliyunBYOACleanupEnabled() bool {
 	return strings.ToLower(strings.TrimSpace(os.Getenv("BYOA_ALIYUN_TEMP_CLEANUP"))) != "off"
 }
 
 func aliyunBYOARequest(ctx context.Context, client *resty.Client, token, shareToken, endpoint string, body interface{}, result interface{}) error {
+	var apiErr ErrorResp
 	req := client.R().SetContext(ctx).SetHeader("content-type", "application/json").
-		SetHeader("Authorization", "Bearer\t"+token).SetBody(body).SetResult(result)
+		SetHeader("Authorization", "Bearer\t"+token).SetBody(body).SetResult(result).SetError(&apiErr)
 	if shareToken != "" {
 		req.SetHeader("x-share-token", shareToken)
 	}
@@ -91,7 +125,7 @@ func aliyunBYOARequest(ctx context.Context, client *resty.Client, token, shareTo
 		return errors.New("阿里云请求过于频繁，请稍后重试")
 	}
 	if resp.IsError() {
-		return fmt.Errorf("aliyun temporary operation http status: %d", resp.StatusCode())
+		return &aliyunBYOAAPIError{code: apiErr.Code, httpStatus: resp.StatusCode()}
 	}
 	return nil
 }
@@ -110,6 +144,27 @@ func aliyunBYOAUserDriveID(ctx context.Context, client *resty.Client, token stri
 }
 
 func aliyunBYOATempFolder(ctx context.Context, client *resty.Client, token, driveID string) (string, error) {
+	if driveID == "" {
+		return "", errors.New("aliyun default drive unavailable")
+	}
+	if folderID, ok := aliyunTempFolderCache.Load(driveID); ok {
+		return folderID.(string), nil
+	}
+	lockValue, _ := aliyunTempFolderLocks.LoadOrStore(driveID, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	if folderID, ok := aliyunTempFolderCache.Load(driveID); ok {
+		return folderID.(string), nil
+	}
+
+	if folderID, found, err := aliyunBYOAFindTempFolder(ctx, client, token, driveID); err != nil {
+		return "", err
+	} else if found {
+		aliyunTempFolderCache.Store(driveID, folderID)
+		return folderID, nil
+	}
+
 	var created struct {
 		FileID string `json:"file_id"`
 	}
@@ -117,30 +172,51 @@ func aliyunBYOATempFolder(ctx context.Context, client *resty.Client, token, driv
 		"drive_id": driveID, "parent_file_id": "root", "name": aliyunBYOATempFolderName,
 		"type": "folder", "check_name_mode": "refuse",
 	}, &created)
-	if err == nil && created.FileID != "" {
-		return created.FileID, nil
-	}
-	var listed struct {
-		Items []struct {
-			FileID string `json:"file_id"`
-			Name   string `json:"name"`
-			Type   string `json:"type"`
-		} `json:"items"`
-	}
-	if listErr := aliyunBYOARequest(ctx, client, token, "", aliyunFileListEndpoint, map[string]interface{}{
-		"drive_id": driveID, "parent_file_id": "root", "limit": 100,
-	}, &listed); listErr != nil {
-		if err != nil {
-			return "", err
+	if err != nil {
+		if folderID, found, listErr := aliyunBYOAFindTempFolder(ctx, client, token, driveID); listErr == nil && found {
+			aliyunTempFolderCache.Store(driveID, folderID)
+			return folderID, nil
 		}
-		return "", listErr
+		return "", err
 	}
-	for _, item := range listed.Items {
-		if item.Name == aliyunBYOATempFolderName && item.Type == "folder" && item.FileID != "" {
-			return item.FileID, nil
+	if created.FileID == "" {
+		return "", errors.New("aliyun BYOA temporary folder create returned empty file_id")
+	}
+	aliyunTempFolderCache.Store(driveID, created.FileID)
+	return created.FileID, nil
+}
+
+func aliyunBYOAFindTempFolder(ctx context.Context, client *resty.Client, token, driveID string) (string, bool, error) {
+	marker := ""
+	seen := make(map[string]struct{})
+	for {
+		if _, duplicate := seen[marker]; duplicate {
+			return "", false, errors.New("aliyun folder listing repeated pagination marker")
 		}
+		seen[marker] = struct{}{}
+		var listed struct {
+			Items []struct {
+				FileID string `json:"file_id"`
+				Name   string `json:"name"`
+				Type   string `json:"type"`
+			} `json:"items"`
+			NextMarker string `json:"next_marker"`
+		}
+		if err := aliyunBYOARequest(ctx, client, token, "", aliyunFileListEndpoint, map[string]interface{}{
+			"drive_id": driveID, "parent_file_id": "root", "limit": 100, "marker": marker,
+		}, &listed); err != nil {
+			return "", false, err
+		}
+		for _, item := range listed.Items {
+			if item.Name == aliyunBYOATempFolderName && item.Type == "folder" && item.FileID != "" {
+				return item.FileID, true, nil
+			}
+		}
+		if listed.NextMarker == "" {
+			return "", false, nil
+		}
+		marker = listed.NextMarker
 	}
-	return "", errors.New("aliyun BYOA temporary folder unavailable")
 }
 
 func (d *AliyundriveShare2Open) byoaCopyShareFile(ctx context.Context, client *resty.Client, token, driveID, parentID, sourceID string) (string, error) {

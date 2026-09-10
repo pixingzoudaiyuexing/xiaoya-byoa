@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/byoa"
@@ -31,7 +30,7 @@ func (d *AliyundriveShare2Open) byoaDirectLink(ctx context.Context, file model.O
 
 	link, err := d.byoaTempCopyLink(ctx, file, accessToken)
 	if err != nil {
-		if strings.Contains(err.Error(), "AccessTokenInvalid") || strings.Contains(err.Error(), "AccessTokenExpired") {
+		if isAliyunBYOAAuthExpired(err) {
 			return nil, &byoa.AuthRequiredError{Provider: byoa.ProviderAliyun}
 		}
 		return nil, err
