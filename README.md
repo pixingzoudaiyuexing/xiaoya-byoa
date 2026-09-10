@@ -1,79 +1,69 @@
 # Xiaoya BYOA
 
-Xiaoya BYOA 面向 Reality fallback 伪装站：访客可匿名浏览公开目录，播放 Aliyun 或 Quark 媒体时由当前浏览器扫码授权。
+Xiaoya BYOA 是基于 OpenList 和小雅公开目录开发的独立网盘浏览与播放服务。访客可以匿名浏览公开目录，播放 Aliyun 或 Quark 媒体时由当前浏览器扫码授权。
 
-正式镜像：`ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest`，支持 `linux/amd64` 和 `linux/arm64`。RealityPanel 固定使用 `latest`。
+正式镜像：
 
-## Docker 部署
-
-### GHCR 正式镜像
-
-创建 `docker-compose.yml`：
-
-```yaml
-services:
-  xiaoya-byoa:
-    image: ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest
-    pull_policy: always
-    container_name: xiaoya-byoa
-    restart: unless-stopped
-    environment:
-      TZ: Asia/Shanghai
-      BYOA_XIAOYA_BOOTSTRAP: "true"
-      BYOA_XIAOYA_UPDATE: if-newer
-      BYOA_XIAOYA_STRICT: "false"
-    ports:
-      - "127.0.0.1:5244:5244"
-    volumes:
-      - xiaoya_byoa_data:/opt/alist/data
-
-volumes:
-  xiaoya_byoa_data:
+```text
+ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest
 ```
 
-启动并检查：
+支持 `linux/amd64` 和 `linux/arm64`。
+
+## 一键部署 / 更新
+
+服务器已经安装 Docker 时，复制下面这一整条命令执行即可。首次运行会创建容器和数据卷；以后再次执行同一条命令就是更新。
 
 ```bash
-docker compose pull
-docker compose up -d
+docker pull ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest && (docker rm -f xiaoya-byoa >/dev/null 2>&1 || true) && docker run -d --name xiaoya-byoa --restart unless-stopped -e TZ=Asia/Shanghai -e BYOA_XIAOYA_BOOTSTRAP=true -e BYOA_XIAOYA_UPDATE=if-newer -e BYOA_XIAOYA_STRICT=false -p 127.0.0.1:5244:5244 -v xiaoya_byoa_data:/opt/alist/data ghcr.io/pixingzoudaiyuexing/xiaoya-byoa:latest
+```
+
+检查运行状态：
+
+```bash
+docker ps --filter name=xiaoya-byoa
 curl -fsS http://127.0.0.1:5244/ping
 ```
 
-返回 `pong` 表示容器已响应。5244 只绑定本机，公网访问必须经过 HTTPS fallback 或反向代理。
+看到 `pong` 表示启动成功。
 
-### 使用仓库内的正式 Compose
-
-```bash
-git clone https://github.com/pixingzoudaiyuexing/xiaoya-byoa.git
-cd xiaoya-byoa
-docker compose -f docker-compose.byoa.release.yml pull
-docker compose -f docker-compose.byoa.release.yml up -d
-```
-
-### 本地源码构建
+查看日志：
 
 ```bash
-git clone https://github.com/pixingzoudaiyuexing/xiaoya-byoa.git
-cd xiaoya-byoa
-docker compose -f docker-compose.byoa.yml up -d --build
+docker logs --tail 100 -f xiaoya-byoa
 ```
 
-本地构建使用 `Dockerfile.byoa`；正式部署优先使用 GHCR 镜像。
+## 数据不会因更新丢失
 
-## 更新与持久化
+一键命令使用独立 Docker volume：
 
-普通更新：
-
-```bash
-docker compose pull
-docker compose up -d
+```text
+xiaoya_byoa_data -> /opt/alist/data
 ```
 
-必须保留 `xiaoya_byoa_data` 数据卷。`/opt/alist/data` 包含 `data.db`、`byoa_cookie.key` 和 `xiaoya_data.version`。普通更新不要执行 `docker compose down -v`，否则会删除卷和实例状态。
+其中保存：
+
+- Xiaoya/OpenList 数据库
+- BYOA Cookie 加密密钥
+- Xiaoya 数据版本
+
+更新只会替换容器，不会删除该 volume。不要执行 `docker volume rm xiaoya_byoa_data`。
 
 ## HTTPS 反向代理
 
-生产必须使用真实公有 TLS，并传递 `X-Forwarded-Proto=https`：
+容器默认只监听：
+
+```text
+127.0.0.1:5244
+```
+
+这是有意的安全设置，5244 不应直接暴露到公网。生产环境请通过 Nginx、Caddy 等 HTTPS 反向代理访问，并传递：
+
+```text
+X-Forwarded-Proto: https
+```
+
+Nginx 示例：
 
 ```nginx
 location / {
@@ -86,25 +76,35 @@ location / {
 }
 ```
 
-请求链路：
+公网部署还应隐藏管理接口：
 
-```text
-normal HTTPS -> fallback / reverse proxy -> Xiaoya BYOA 127.0.0.1:5244
-Reality handshake -> Reality core service
+```nginx
+location ^~ /@manage {
+    return 404;
+}
+
+location ^~ /api/admin {
+    return 404;
+}
 ```
 
-公网反代应隐藏 `/@manage` 和 `/api/admin*`，但不能阻断 `/api/fs/*`、`/api/public/byoa/*`、`/d/*` 或 `/p/*`。Reality core 与 Xiaoya fallback 应保持故障解耦。
+不要阻断 `/api/fs/*`、`/api/public/byoa/*`、`/d/*` 和 `/p/*`。
 
-## 支持范围与限制
+## 当前能力
 
-- Aliyun：已验证视频预览播放；`get_share_link_download_url` 返回 HTTP 410 时回退到视频预览接口。非视频原文件下载和音频未验证。
-- Quark：使用当前浏览器扫码凭据进行播放。
-- BYOA same-path Link Cache / singleflight 可能导致同路径跨用户 Link 状态复用，这是当前低流量伪装站用途下的 **KNOWN SECURITY FINDINGS: ACCEPTED RISK**，已延期到后续 hardening。
-- 不要在日志、Issue、PR 或配置中提交 Token、Cookie、Authorization 或 admin 密码。
+- Aliyun：浏览器扫码后，将分享视频临时转存到当前访客自己的专用目录，取得完整播放地址后立即回收本次创建的精确临时文件。已验证完整影片时长及 05:00、30:00 跳转播放。
+- Quark：使用当前浏览器扫码凭据播放。
+- 服务器不使用共享 Aliyun 账号池，不持久化访客 Refresh Token。
 
-## 文档
+## 已知限制
 
-- [正式部署说明](docs/BYOA_DEPLOY.md)
+- Aliyun 当前验证范围是视频播放；非视频原文件下载和音频未验证。
+- BYOA 同路径请求可能复用 OpenList 全局 Link Cache / singleflight 中的请求派生状态。这是当前版本的已接受风险，计划后续加固。
+- 不要在日志、Issue、PR 或配置中提交 Token、Cookie、Authorization、完整签名 URL 或管理员密码。
+
+## 更多文档
+
+- [部署说明](docs/BYOA_DEPLOY.md)
 - [MVP / Release 状态](docs/BYOA_MVP_STATUS.md)
 - [最终交接](docs/CODEX_HANDOFF.md)
 - [许可证](LICENSE)
